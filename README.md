@@ -24,8 +24,7 @@ use-case-delivery-agent/
 ├── notebooks/
 │   ├── ai_parse_processor.ipynb          # Document processing and vector indexing
 │   ├── check_table.ipynb                 # Table verification and status checking
-│   ├── usecase_delivery_planning_agent.ipynb  # Main planning agent
-│   └── GenerateConfigDQX_workingExample_json (1).ipynb  # DQX reference example
+│   └── usecase_delivery_planning_agent.ipynb  # Main planning agent
 ├── databricks.yml                        # Databricks Asset Bundle configuration
 └── README.md                            # This file
 ```
@@ -197,31 +196,6 @@ databricks bundle run ai_parse_processor_job --profile dev --target production
 import logging
 logging.basicConfig(level=logging.DEBUG)
 ```
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## 🙏 Acknowledgments
-
-- Built with [DSPy](https://dspy.ai/) for AI program optimization
-- Powered by [Databricks](https://databricks.com/) AI services
-- Inspired by the DQX (Data Quality eXcellence) framework
-
-## 📞 Support
-
-For questions and support:
-- Create an issue in the repository
-- Contact the development team
-- Check Databricks documentation for platform-specific issues
 
 ---
 
