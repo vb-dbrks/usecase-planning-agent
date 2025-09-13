@@ -1,8 +1,7 @@
 bundle:
-  name: pptx-parser-bundle
+  name: usecase-delivery-agent
 
 workspace:
-  root_path: /Workspace/pptx-parser-bundle
   host: https://adb-984752964297111.11.azuredatabricks.net/
 
 resources:
@@ -36,8 +35,5 @@ resources:
 environments:
   development:
     mode: development
-    workspace:
-      root_path: "~/pptx-parser-bundle"
   production:
-    workspace:
-      root_path: "/Workspace/pptx-parser-bundle"
+    mode: production
