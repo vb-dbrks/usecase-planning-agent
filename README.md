@@ -33,6 +33,7 @@ use-case-delivery-agent/
 
 ### Prerequisites
 - Databricks workspace with Unity Catalog enabled
+- Databricks Runtime 16.4 LTS or higher (required for DSPy and vector search)
 - Vector Search endpoint configured
 - Databricks CLI configured with appropriate permissions
 
@@ -142,6 +143,8 @@ CHUNK_SIZE = 500  # characters per chunk
 CHUNK_OVERLAP = 50  # overlap between chunks
 ```
 
+**Note**: This notebook requires Databricks Runtime 16.4 LTS or higher for proper DSPy and vector search functionality.
+
 ### Planning Agent Settings
 ```python
 # Configuration in usecase_delivery_planning_agent.ipynb
@@ -189,6 +192,8 @@ databricks bundle run ai_parse_processor_job --profile dev --target production
 1. **Vector Search Endpoint Not Found**: Ensure the endpoint is created and accessible
 2. **Document Processing Failures**: Check Unity Catalog permissions and file paths
 3. **Planning Agent Errors**: Verify DSPy configuration and model access
+4. **DSPy Import Errors**: Ensure you're using Databricks Runtime 16.4 LTS or higher
+5. **Vector Search Index Errors**: Verify both endpoint name and index name are correctly configured
 
 ### Debug Mode
 ```python
