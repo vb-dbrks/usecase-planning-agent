@@ -36,6 +36,7 @@ use-case-delivery-agent/
 - Databricks Runtime 16.4 LTS or higher (required for DSPy and vector search)
 - Vector Search endpoint configured
 - Databricks CLI configured with appropriate permissions
+- Model serving permissions for MLflow deployment
 
 ### Environment Variables
 ```bash
@@ -73,6 +74,13 @@ databricks bundle deploy --profile dev --target development
 5. **Planning**: Generate comprehensive project plans
 6. **Risk Assessment**: Identify risks and mitigation strategies
 
+### MLflow Model Serving
+1. **Model Logging**: Log DSPy agents as MLflow custom models
+2. **Unity Catalog Registration**: Register models in Unity Catalog for version control
+3. **Endpoint Deployment**: Deploy models as production API endpoints
+4. **Automatic Scaling**: Scale based on traffic with zero-downtime updates
+5. **Monitoring**: Track performance and usage metrics
+
 ## 🎯 Usage
 
 ### Document Processing
@@ -94,6 +102,14 @@ agent.start_planning_session(
     project_context="Your project description",
     timeline_requirements="6 months deadline"
 )
+```
+
+### Deploy as MLflow Model
+```python
+# Run the deployment cell in the notebook
+# The notebook now includes MLflow deployment at the end
+# Just run the last few cells to deploy the model
+```
 
 # Answer questions interactively
 agent.answer_question(question, answer, category)
