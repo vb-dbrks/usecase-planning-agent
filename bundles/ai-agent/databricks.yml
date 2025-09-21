@@ -1,0 +1,101 @@
+bundle:
+  name: ai-agent
+
+variables:
+  catalog_name:
+    description: "Catalog name for the data"
+  schema_name:
+    description: "Schema name for the data"
+  vector_search_endpoint:
+    description: "Vector search endpoint name"
+  vector_index_name:
+    description: "Name of the vector index"
+  migration_documents_table:
+    description: "Name of the migration documents table"
+  agent_model:
+    description: "AI agent model to use"
+  temperature:
+    description: "Temperature for AI model responses"
+  max_tokens:
+    description: "Maximum tokens for AI model responses"
+  mlflow_experiment_name:
+    description: "MLflow experiment name for tracking"
+
+targets:
+  default:
+    workspace:
+      host: https://adb-984752964297111.11.azuredatabricks.net
+      root_path: /bundles/ai-agent
+    variables:
+      catalog_name: "vbdemos"
+      schema_name: "usecase_agent"
+      vector_search_endpoint: "usecase-agent"
+      vector_index_name: "vbdemos.usecase_agent.migration_planning_documents"
+      migration_documents_table: "vbdemos.usecase_agent.migration_documents"
+      agent_model: "databricks-dbrx-instruct"
+      temperature: "0.1"
+      max_tokens: "2048"
+      mlflow_experiment_name: "/Users/varun.bhandary@databricks.com/usecase-agent"
+  
+  dev:
+    workspace:
+      host: https://adb-984752964297111.11.azuredatabricks.net
+      root_path: /bundles/ai-agent-dev
+    variables:
+      catalog_name: "vbdemos"
+      schema_name: "usecase_agent"
+      vector_search_endpoint: "usecase-agent"
+      vector_index_name: "vbdemos.usecase_agent.migration_planning_documents"
+      migration_documents_table: "vbdemos.usecase_agent.migration_documents"
+      agent_model: "databricks-dbrx-instruct"
+      temperature: "0.1"
+      max_tokens: "200000"
+      mlflow_experiment_name: "/Users/varun.bhandary@databricks.com/usecase-agent"
+  
+  prod:
+    workspace:
+      host: https://adb-984752964297111.11.azuredatabricks.net
+      root_path: /bundles/ai-agent-prod
+    variables:
+      catalog_name: "vbdemos"
+      schema_name: "usecase_agent"
+      vector_search_endpoint: "usecase-agent"
+      vector_index_name: "vbdemos.usecase_agent.migration_planning_documents"
+      migration_documents_table: "vbdemos.usecase_agent.migration_documents"
+      agent_model: "databricks-dbrx-instruct"
+      temperature: "0.1"
+      max_tokens: "4096"
+      mlflow_experiment_name: "/Users/varun.bhandary@databricks.com/usecase-agent"
+
+resources:
+  jobs:
+    migration_planning_agent_job:
+      name: "migration-planning-agent-job"
+      tasks:
+        - task_key: "run_agent"
+          notebook_task:
+            notebook_path: "notebooks/migration_planning_agent.py"
+            base_parameters:
+              vector_search_endpoint: ${var.vector_search_endpoint}
+              vector_index_name: ${var.vector_index_name}
+              migration_documents_table: ${var.migration_documents_table}
+              agent_model: ${var.agent_model}
+              temperature: ${var.temperature}
+              max_tokens: ${var.max_tokens}
+              mlflow_experiment_name: ${var.mlflow_experiment_name}
+
+    agent_evaluation_job:
+      name: "agent-evaluation-job"
+      tasks:
+        - task_key: "evaluate_agent"
+          notebook_task:
+            notebook_path: "notebooks/agent_evaluation.py"
+            base_parameters:
+              vector_search_endpoint: ${var.vector_search_endpoint}
+              vector_index_name: ${var.vector_index_name}
+              migration_documents_table: ${var.migration_documents_table}
+              agent_model: ${var.agent_model}
+              temperature: ${var.temperature}
+              max_tokens: ${var.max_tokens}
+              mlflow_experiment_name: ${var.mlflow_experiment_name}
+

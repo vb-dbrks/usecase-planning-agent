@@ -1,0 +1,83 @@
+bundle:
+  name: data-pipeline
+
+variables:
+  catalog_name:
+    description: "Catalog name for the data"
+  schema_name:
+    description: "Schema name for the data"
+  vector_search_endpoint:
+    description: "Vector search endpoint name"
+  pptx_volume_path:
+    description: "Path to the volume containing documents"
+  processed_table:
+    description: "Name of the processed table"
+  vector_index_name:
+    description: "Name of the vector index"
+  limit:
+    description: "Limit for processing files"
+
+targets:
+  default:
+    workspace:
+      host: https://adb-984752964297111.11.azuredatabricks.net
+      root_path: /bundles/data-pipeline
+    variables:
+      catalog_name: "vbdemos"
+      schema_name: "usecase_agent"
+      vector_search_endpoint: "usecase-agent"
+      pptx_volume_path: "/Volumes/vbdemos/dbdemos_autoloader/raw_data/usecase-planning-agent-pdf/"
+      processed_table: "vbdemos.usecase_agent.usecase_planning_agent_pdf_parsed"
+      vector_index_name: "vbdemos.usecase_agent.migration_planning_documents"
+      limit: "10"
+  
+  dev:
+    workspace:
+      host: https://adb-984752964297111.11.azuredatabricks.net
+      root_path: /bundles/data-pipeline-dev
+    variables:
+      catalog_name: "vbdemos"
+      schema_name: "usecase_agent"
+      vector_search_endpoint: "usecase-agent"
+      pptx_volume_path: "/Volumes/vbdemos/dbdemos_autoloader/raw_data/usecase-planning-agent-pdf/"
+      processed_table: "vbdemos.usecase_agent.usecase_planning_agent_pdf_parsed"
+      vector_index_name: "vbdemos.usecase_agent.migration_planning_documents"
+      limit: "5"
+  
+  prod:
+    workspace:
+      host: https://adb-984752964297111.11.azuredatabricks.net
+      root_path: /bundles/data-pipeline-prod
+    variables:
+      catalog_name: "vbdemos"
+      schema_name: "usecase_agent"
+      vector_search_endpoint: "usecase-agent"
+      pptx_volume_path: "/Volumes/vbdemos/dbdemos_autoloader/raw_data/usecase-planning-agent-pdf/"
+      processed_table: "vbdemos.usecase_agent.usecase_planning_agent_pdf_parsed"
+      vector_index_name: "vbdemos.usecase_agent.migration_planning_documents"
+      limit: "100"
+
+resources:
+  jobs:
+    document_processing_job:
+      name: "document-processing-job"
+      tasks:
+        - task_key: "process_documents"
+          notebook_task:
+            notebook_path: "notebooks/process_documents.py"
+            base_parameters:
+              sourceVolumePath: ${var.pptx_volume_path}
+              destinationTableName: ${var.processed_table}
+              limit: ${var.limit}
+              partitionCount: "4"
+
+    create_vector_index_job:
+      name: "create-vector-index-job"
+      tasks:
+        - task_key: "create_vector_index"
+          notebook_task:
+            notebook_path: "notebooks/create_vector_index.py"
+            base_parameters:
+              source_table: ${var.processed_table}
+              vector_search_endpoint: ${var.vector_search_endpoint}
+              vector_index_name: ${var.vector_index_name}
