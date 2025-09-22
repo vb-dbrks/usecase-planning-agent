@@ -74,7 +74,7 @@ resources:
       tasks:
         - task_key: "run_agent"
           notebook_task:
-            notebook_path: "notebooks/migration_planning_agent.py"
+            notebook_path: "notebooks/migration_planning_agent_v2.py"
             base_parameters:
               vector_search_endpoint: ${var.vector_search_endpoint}
               vector_index_name: ${var.vector_index_name}

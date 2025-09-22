@@ -897,6 +897,33 @@ class MigrationPlanningAgent(dspy.Module):
         import datetime
         return datetime.datetime.now().isoformat()
     
+    def forward(self, inputs):
+        """Forward method for MLflow deployment - processes user input and returns DSPy Prediction."""
+        try:
+            # Handle both string and dictionary inputs
+            if isinstance(inputs, dict):
+                user_input = inputs.get("inputs", "")
+            else:
+                user_input = str(inputs)
+            
+            # Process user input through the agent
+            result = self.process_user_input(user_input)
+            
+            # Convert result to DSPy Prediction format
+            return dspy.Prediction(
+                response=result.get("response", ""),
+                type=result.get("type", "conversation"),
+                questions=result.get("questions", ""),
+                category=result.get("category", "")
+            )
+        except Exception as e:
+            return dspy.Prediction(
+                response=f"Error processing input: {str(e)}",
+                type="error",
+                questions="",
+                category=""
+            )
+    
     def get_next_category_questions(self):
         """Get questions for the next planning category."""
         categories = list(PLANNING_CATEGORIES.keys())
@@ -1268,30 +1295,35 @@ print(f"📊 Created {len(training_data)} training examples for DSPy optimizatio
 
 # COMMAND ----------
 
-# Create the DSPy module instance
-dspy_module = MigrationPlanningDSPyModule(
+# Create the MigrationPlanningAgent instance directly
+migration_agent = MigrationPlanningAgent(
     vector_search_endpoint=vector_search_endpoint,
     vector_search_index=vector_index_name
 )
 
 # Input example for the model - following MLflow documentation pattern
-input_example = "Resource & Team"
+input_example = "I need to migrate our Oracle data warehouse to Databricks"
 
-# Define input and output schemas for MLflow to fix tensor-based signature error
+# Define input and output schemas for the MigrationPlanningAgent
 from mlflow.types.schema import Schema, ColSpec
 from mlflow.types import DataType
 
 # Define input schema (string input)
 input_schema = Schema([ColSpec(DataType.string, "inputs")])
 
-# Define output schema (string output)
-output_schema = Schema([ColSpec(DataType.string, "predictions")])
+# Define output schema (dictionary output with response details)
+output_schema = Schema([
+    ColSpec(DataType.string, "response"),
+    ColSpec(DataType.string, "type"),
+    ColSpec(DataType.string, "questions", required=False),
+    ColSpec(DataType.string, "category", required=False)
+])
 
-# Log the DSPy model using MLflow's native DSPy support - following documentation
+# Log the MigrationPlanningAgent directly using MLflow's native DSPy support
 with mlflow.start_run() as run:
-    # Log the DSPy model with explicit schemas - following documentation pattern
+    # Log the MigrationPlanningAgent with explicit schemas
     model_info = mlflow.dspy.log_model(
-        dspy_module,
+        migration_agent,
         artifact_path="migration-planning-agent",
         input_example=input_example,
         signature=mlflow.models.signature.ModelSignature(
@@ -1324,24 +1356,37 @@ print(f"🔗 Next step: Deploy via Databricks Model Serving UI or API")
 
 # COMMAND ----------
 
-# # Test the logged DSPy model following MLflow documentation pattern
-# print("Testing the logged DSPy model...")
+# Test the agent directly first
+print("Testing the MigrationPlanningAgent directly...")
+test_input = "I need to migrate our Oracle data warehouse to Databricks"
+direct_result = migration_agent.process_user_input(test_input)
+print(f"Direct Agent Response:\n{direct_result}")
+print("✅ Direct agent test completed!")
 
-# # Load the model using MLflow DSPy
-# loaded_dspy_model = mlflow.dspy.load_model(model_info.model_uri)
+# Test the logged DSPy model following MLflow documentation pattern
+print("\nTesting the logged DSPy model...")
 
-# # Test with question generation - following documentation pattern
-# print("\n🔍 Testing Question Generation:")
-# question_result = loaded_dspy_model("Resource & Team")
-# print(f"Generated Questions:\n{question_result.questions}")
+# Load the model using MLflow DSPy
+loaded_dspy_model = mlflow.dspy.load_model(model_info.model_uri)
 
-# # Test with PyFunc API - following documentation pattern
-# print("\n🔧 Testing PyFunc API:")
-# loaded_pyfunc_model = mlflow.pyfunc.load_model(model_info.model_uri)
-# pyfunc_result = loaded_pyfunc_model.predict(input_example)
-# print(f"PyFunc Result: {pyfunc_result}")
+# Test with question generation - following documentation pattern
+print("\n🔍 Testing Question Generation:")
+# The model expects {"inputs": "..."} format based on our schema
+test_input_dict = {"inputs": "I need to migrate our Oracle data warehouse to Databricks"}
+question_result = loaded_dspy_model(test_input_dict)
+print(f"Generated Response:\n{question_result.response}")
+print(f"Response Type: {question_result.type}")
+if hasattr(question_result, 'questions') and question_result.questions:
+    print(f"Questions:\n{question_result.questions}")
 
-# print("✅ Model test completed successfully!")
+# Test with PyFunc API - following documentation pattern
+print("\n🔧 Testing PyFunc API:")
+loaded_pyfunc_model = mlflow.pyfunc.load_model(model_info.model_uri)
+# PyFunc expects the input in the format defined by the schema
+pyfunc_result = loaded_pyfunc_model.predict([input_example])
+print(f"PyFunc Result: {pyfunc_result}")
+
+print("✅ Model test completed successfully!")
 
 # COMMAND ----------
 
