@@ -13,11 +13,9 @@
 
 # Install required packages with version pinning for DBR 16.4 LTS compatibility
 # Pin DSPy to version compatible with Pydantic 2.8.2 in DBR 16.4 LTS
-%pip install dspy-ai==2.4.7 databricks-vectorsearch mlflow flask
+%pip install dspy databricks-vectorsearch mlflow flask
 
 # Ensure Pydantic compatibility - DBR 16.4 LTS has Pydantic 2.8.2
-# This prevents the 'add_json_schema_extra' error during model deployment
-%pip install --upgrade pydantic==2.8.2
 
 # Restart Python to ensure packages are loaded
 dbutils.library.restartPython()
@@ -49,6 +47,15 @@ print("✅ Version compatibility check completed")
 # COMMAND ----------
 
 # Get parameters from job configuration
+# Get parameters from job configuration
+# dbutils.widgets.text("vector_search_endpoint", "usecase-agent")
+# dbutils.widgets.text("vector_index_name", "vbdemos.usecase_agent.migration_planning_documents")
+# dbutils.widgets.text("migration_documents_table", "vbdemos.usecase_agent.migration_documents")
+# dbutils.widgets.text("agent_model", "databricks-claude-3-7-sonnet")
+# dbutils.widgets.text("temperature", "0.1")
+# dbutils.widgets.text("max_tokens", "5000")
+# dbutils.widgets.text("mlflow_experiment_name", "/Users/varun.bhandary@databricks.com/usecase-agent")
+
 vector_search_endpoint = dbutils.widgets.get("vector_search_endpoint")
 vector_index_name = dbutils.widgets.get("vector_index_name")
 migration_documents_table = dbutils.widgets.get("migration_documents_table")
@@ -150,6 +157,31 @@ class RiskAssessor(dspy.Signature):
     project_plan: str = dspy.InputField(desc="The proposed project plan")
     project_context: str = dspy.InputField(desc="Project context and constraints")
     risk_assessment: str = dspy.OutputField(desc="Identified risks, their likelihood, impact, and mitigation strategies")
+
+# NEW CONVERSATIONAL SIGNATURES FOR CHAT UI
+class ProjectContextExtractor(dspy.Signature):
+    """Extract structured project context from user's natural language description."""
+    user_input: str = dspy.InputField(desc="User's natural language description of their migration project")
+    project_context: str = dspy.OutputField(desc="Structured project context including source platform, target platform, objectives, and key details")
+    suggested_category: str = dspy.OutputField(desc="Suggested planning category to start with (Resource & Team, Technical Scope & Architecture, Customer Background & Drivers, etc.)")
+
+class ConversationUnderstanding(dspy.Signature):
+    """Understand user input in the context of ongoing migration planning conversation."""
+    user_input: str = dspy.InputField(desc="Current user input/message")
+    conversation_history: str = dspy.InputField(desc="Previous conversation context and gathered information")
+    project_context: str = dspy.InputField(desc="Current project context and objectives")
+    intent: str = dspy.OutputField(desc="User intent: 'answer_question', 'ask_category', 'request_plan', 'general_help', 'provide_context'")
+    suggested_action: str = dspy.OutputField(desc="Suggested next action: 'ask_questions', 'generate_plan', 'clarify', 'continue_category'")
+    response_type: str = dspy.OutputField(desc="Type of response needed: 'questions', 'plan', 'clarification', 'conversation'")
+
+class IntelligentResponseGenerator(dspy.Signature):
+    """Generate intelligent, conversational responses for migration planning chat."""
+    user_input: str = dspy.InputField(desc="User's input/message")
+    conversation_context: str = dspy.InputField(desc="Current conversation context and state")
+    project_context: str = dspy.InputField(desc="Project context and objectives")
+    intent: str = dspy.InputField(desc="Identified user intent")
+    suggested_action: str = dspy.InputField(desc="Suggested next action")
+    response: str = dspy.OutputField(desc="Intelligent, helpful response that guides the user through migration planning")
 
 print("DSPy signatures defined successfully!")
 
@@ -272,6 +304,47 @@ class RiskAssessmentModule(dspy.Module):
             project_context=project_context
         )
 
+# NEW CONVERSATIONAL MODULES FOR CHAT UI
+class ProjectContextExtractionModule(dspy.Module):
+    """Module to extract structured project context from user descriptions."""
+    
+    def __init__(self):
+        super().__init__()
+        self.extract = dspy.ChainOfThought(ProjectContextExtractor)
+    
+    def forward(self, user_input: str):
+        return self.extract(user_input=user_input)
+
+class ConversationUnderstandingModule(dspy.Module):
+    """Module to understand user intent and conversation context."""
+    
+    def __init__(self):
+        super().__init__()
+        self.understand = dspy.ChainOfThought(ConversationUnderstanding)
+    
+    def forward(self, user_input: str, conversation_history: str, project_context: str):
+        return self.understand(
+            user_input=user_input,
+            conversation_history=conversation_history,
+            project_context=project_context
+        )
+
+class IntelligentResponseGenerationModule(dspy.Module):
+    """Module to generate intelligent, conversational responses."""
+    
+    def __init__(self):
+        super().__init__()
+        self.generate = dspy.ChainOfThought(IntelligentResponseGenerator)
+    
+    def forward(self, user_input: str, conversation_context: str, project_context: str, intent: str, suggested_action: str):
+        return self.generate(
+            user_input=user_input,
+            conversation_context=conversation_context,
+            project_context=project_context,
+            intent=intent,
+            suggested_action=suggested_action
+        )
+
 print("DSPy modules defined successfully!")
 
 # COMMAND ----------
@@ -373,12 +446,18 @@ class MigrationPlanningAgent(dspy.Module):
     
     def __init__(self, vector_search_endpoint: str, vector_search_index: str):
         super().__init__()
+        # Core planning modules
         self.question_generator = QuestionGenerationModule()
         self.document_retriever = DocumentRetrievalModule(vector_search_endpoint, vector_search_index)
         self.answer_analyzer = AnswerAnalysisModule()
         self.plan_generator = MigrationPlanGenerationModule()
         self.plan_scorer = PlanCompletenessScoringModule()
         self.risk_assessor = RiskAssessmentModule()
+        
+        # NEW: Conversational AI modules for chat UI
+        self.context_extractor = ProjectContextExtractionModule()
+        self.conversation_understanding = ConversationUnderstandingModule()
+        self.response_generator = IntelligentResponseGenerationModule()
         
         # Store conversation state
         self.conversation_history = []
@@ -387,6 +466,7 @@ class MigrationPlanningAgent(dspy.Module):
         self.timeline_requirements = ""
         self.current_plan = ""
         self.completeness_score = 0
+        self.is_initialized = False
     
     def start_planning_session(self, project_context: str, timeline_requirements: str = ""):
         """Start a new planning session."""
@@ -614,34 +694,208 @@ class MigrationPlanningAgent(dspy.Module):
         }
     
     def process_user_input(self, user_input: str):
-        """Process user input and handle special commands like /plan."""
+        """Process user input with intelligent conversation understanding for chat UI."""
         user_input = user_input.strip()
         
-        # Check for special commands
+        # Handle special commands first
         if user_input.lower() == "/plan":
             return self.generate_plan_manually()
         elif user_input.lower() == "/status":
             return self.get_conversation_summary()
         elif user_input.lower() == "/help":
             return {
-                "help": "Available commands:\n/plan - Generate migration plan\n/status - Show conversation summary\n/help - Show this help message"
+                "type": "help",
+                "response": "Available commands:\n/plan - Generate migration plan\n/status - Show conversation summary\n/help - Show this help message\n\nYou can also:\n- Describe your migration project\n- Answer questions about your current setup\n- Ask about specific planning categories"
             }
         
-        # If it's a question, generate questions for that category
+        # If this is the first interaction and no project context exists, extract it
+        if not self.is_initialized or not self.project_context:
+            return self._handle_initial_user_input(user_input)
+        
+        # For ongoing conversation, understand the user's intent
+        conversation_context = self._format_conversation_context()
+        
+        try:
+            # Understand user intent and context
+            understanding = self.conversation_understanding(
+                user_input=user_input,
+                conversation_history=conversation_context,
+                project_context=self.project_context
+            )
+            
+            intent = understanding.intent
+            suggested_action = understanding.suggested_action
+            response_type = understanding.response_type
+            
+            # Generate appropriate response based on intent
+            if intent == "provide_context":
+                return self._handle_context_provision(user_input)
+            elif intent == "answer_question":
+                return self._handle_question_answer(user_input)
+            elif intent == "ask_category":
+                return self._handle_category_request(user_input)
+            elif intent == "request_plan":
+                return self.generate_plan_manually()
+            elif intent == "general_help":
+                return self._handle_general_help()
+            else:
+                # Generate intelligent response
+                return self._generate_intelligent_response(user_input, conversation_context, intent, suggested_action)
+                
+        except Exception as e:
+            # Fallback to simple response
+            return self._generate_fallback_response(user_input)
+    
+    def _handle_initial_user_input(self, user_input: str):
+        """Handle the first user input to extract project context."""
+        try:
+            # Extract project context from user's description
+            context_result = self.context_extractor(user_input=user_input)
+            
+            # Set up the planning session
+            self.project_context = context_result.project_context
+            self.is_initialized = True
+            
+            # Get suggested category to start with
+            suggested_category = context_result.suggested_category
+            
+            # Generate welcome message and first questions
+            welcome_message = f"Great! I understand you're working on: {self.project_context}\n\nLet me help you plan this migration to Databricks. I'll start by asking some questions about {suggested_category}."
+            
+            # Generate questions for the suggested category
+            questions = self._generate_questions_for_category(suggested_category)
+            
+            return {
+                "type": "initialization",
+                "response": welcome_message,
+                "questions": questions,
+                "category": suggested_category
+            }
+            
+        except Exception as e:
+            # Fallback to default questions
+            return {
+                "type": "questions",
+                "response": "I'll help you plan your migration to Databricks. Let me start with some basic questions about your project.",
+                "questions": self._generate_questions_for_category("Resource & Team"),
+                "category": "Resource & Team"
+            }
+    
+    def _handle_context_provision(self, user_input: str):
+        """Handle when user provides additional context."""
+        # Add to conversation history
+        self.conversation_history.append({
+            "type": "context",
+            "content": user_input,
+            "timestamp": self._get_timestamp()
+        })
+        
+        # Update project context if needed
+        if len(user_input) > 50:  # Substantial context
+            self.project_context += f"\n\nAdditional context: {user_input}"
+        
+        # Get next questions
+        next_questions = self.get_next_category_questions()
+        if next_questions:
+            return {
+                "type": "questions",
+                "response": "Thanks for that additional context! Let me continue with the next set of questions.",
+                "questions": next_questions
+            }
+        else:
+            return {
+                "type": "ready_for_plan",
+                "response": "Great! I have enough information to help you generate a migration plan. Use /plan to create your plan.",
+                "suggestions": ["/plan - Generate migration plan", "/status - Review what we've discussed"]
+            }
+    
+    def _handle_question_answer(self, user_input: str):
+        """Handle when user answers a question."""
+        # This would need to be enhanced to match with the current question
+        # For now, add to conversation history
+        self.conversation_history.append({
+            "type": "answer",
+            "content": user_input,
+            "timestamp": self._get_timestamp()
+        })
+        
+        # Get next questions
+        next_questions = self.get_next_category_questions()
+        if next_questions:
+            return {
+                "type": "questions",
+                "response": "Thanks for your answer! Let me ask the next set of questions.",
+                "questions": next_questions
+            }
+        else:
+            return {
+                "type": "ready_for_plan",
+                "response": "Excellent! I have enough information to help you generate a migration plan. Use /plan to create your plan.",
+                "suggestions": ["/plan - Generate migration plan", "/status - Review what we've discussed"]
+            }
+    
+    def _handle_category_request(self, user_input: str):
+        """Handle when user requests a specific category."""
+        # Check if it's a valid category
         if user_input in PLANNING_CATEGORIES:
             questions = self._generate_questions_for_category(user_input)
             return {
                 "type": "questions",
-                "category": user_input,
-                "questions": questions
+                "response": f"Here are questions about {user_input}:",
+                "questions": questions,
+                "category": user_input
             }
-        
-        # Default: treat as a question and generate questions
+        else:
+            return {
+                "type": "category_list",
+                "response": "Here are the available planning categories:",
+                "categories": list(PLANNING_CATEGORIES.keys())
+            }
+    
+    def _handle_general_help(self):
+        """Handle general help requests."""
         return {
-            "type": "questions",
-            "category": "General",
-            "questions": self._generate_questions_for_category("Resource & Team")  # Default category
+            "type": "help",
+            "response": "I'm here to help you plan your migration to Databricks! I can:\n\n• Ask questions about your current setup\n• Help you understand what's needed for migration\n• Generate a comprehensive migration plan\n• Assess risks and provide recommendations\n\nJust describe your project or answer my questions to get started!"
         }
+    
+    def _generate_intelligent_response(self, user_input: str, conversation_context: str, intent: str, suggested_action: str):
+        """Generate an intelligent response using the response generator."""
+        try:
+            response_result = self.response_generator(
+                user_input=user_input,
+                conversation_context=conversation_context,
+                project_context=self.project_context,
+                intent=intent,
+                suggested_action=suggested_action
+            )
+            
+            return {
+                "type": "conversation",
+                "response": response_result.response
+            }
+        except Exception as e:
+            return self._generate_fallback_response(user_input)
+    
+    def _generate_fallback_response(self, user_input: str):
+        """Generate a fallback response when AI modules fail."""
+        return {
+            "type": "conversation",
+            "response": "I understand you're working on a migration project. Let me help you by asking some questions about your current setup. What's your current data platform?"
+        }
+    
+    def _format_conversation_context(self):
+        """Format conversation history for context."""
+        if not self.conversation_history:
+            return "No previous conversation."
+        
+        recent_entries = self.conversation_history[-5:]  # Last 5 entries
+        return "\n".join([f"{entry['type']}: {entry['content']}" for entry in recent_entries])
+    
+    def _get_timestamp(self):
+        """Get current timestamp."""
+        import datetime
+        return datetime.datetime.now().isoformat()
     
     def get_next_category_questions(self):
         """Get questions for the next planning category."""
