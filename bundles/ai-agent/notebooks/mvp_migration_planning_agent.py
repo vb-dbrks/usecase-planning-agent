@@ -107,13 +107,15 @@ print("DSPy and Vector Search configured successfully!")
 # COMMAND ----------
 
 class SimpleStorage:
-    """Optimized in-memory storage for MVP demo - stores only user inputs."""
+    """Optimized in-memory storage for MVP demo - stores only user inputs with user isolation."""
     
-    def __init__(self):
+    def __init__(self, user_id=None):
+        self.user_id = user_id or "default_user"
         self.user_inputs = []  # Store only user inputs (not agent responses)
         self.information_summary = ""
         self.current_questions = []
         self.questions_asked = set()
+        print(f"🔐 [STORAGE] Created storage for user: {self.user_id}")
     
     def add_user_input(self, user_input):
         """Store only user input, not agent response - reduces context length by 80-90%."""
@@ -257,18 +259,66 @@ print("   - Complex agents (Questions, Gap Analysis, Planning): dspy.ChainOfThou
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## 5. Session Management for User Isolation
+
+# COMMAND ----------
+
+class SessionManager:
+    """Manages user sessions to prevent data bleeding between users."""
+    
+    def __init__(self, vector_search_endpoint, vector_index):
+        self.vector_search_endpoint = vector_search_endpoint
+        self.vector_index = vector_index
+        self.sessions = {}  # user_id -> ConversationManager
+        print("🔐 [SESSION_MANAGER] Session manager initialized")
+    
+    def get_agent_for_user(self, user_id):
+        """Get or create a ConversationManager for the specified user."""
+        if user_id not in self.sessions:
+            print(f"🔐 [SESSION_MANAGER] Creating new session for user: {user_id}")
+            self.sessions[user_id] = ConversationManager(
+                vector_search_endpoint=self.vector_search_endpoint,
+                vector_index=self.vector_index,
+                user_id=user_id
+            )
+        else:
+            print(f"🔐 [SESSION_MANAGER] Using existing session for user: {user_id}")
+        return self.sessions[user_id]
+    
+    def get_active_sessions(self):
+        """Get list of active user sessions."""
+        return list(self.sessions.keys())
+    
+    def clear_session(self, user_id):
+        """Clear a specific user session."""
+        if user_id in self.sessions:
+            del self.sessions[user_id]
+            print(f"🔐 [SESSION_MANAGER] Cleared session for user: {user_id}")
+    
+    def clear_all_sessions(self):
+        """Clear all user sessions."""
+        self.sessions.clear()
+        print("🔐 [SESSION_MANAGER] Cleared all sessions")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## 6. ConversationManager - Main Agent
 
 # COMMAND ----------
 
 class ConversationManager(dspy.Module):
-    """Simplified conversation manager for MVP demo."""
+    """Simplified conversation manager for MVP demo with per-user session support."""
     
-    def __init__(self, vector_search_endpoint, vector_index):
+    def __init__(self, vector_search_endpoint, vector_index, user_id=None):
         super().__init__()
-        self.storage = SimpleStorage()
+        self.user_id = user_id or "default_user"
         self.vector_search_endpoint = vector_search_endpoint
         self.vector_index = vector_index
+        
+        # Create per-user storage
+        self.storage = SimpleStorage(user_id=self.user_id)
+        print(f"🔐 [SESSION] Created new session for user: {self.user_id}")
         
         # Initialize DSPy components with selective Chain of Thought
         # Simple agents: Use dspy.Predict() for faster, direct responses
@@ -659,13 +709,11 @@ print("ConversationManager implemented successfully!")
 
 # COMMAND ----------
 
-# Create the simplified MVP agent
-mvp_agent = ConversationManager(
-    vector_search_endpoint=vector_search_endpoint,
-    vector_index=vector_index_name
-)
+# Create a session manager for testing (not used in production)
+test_session_manager = SessionManager(vector_search_endpoint, vector_index_name)
 
-print("MVP Agent created successfully!")
+print("Session Manager created successfully!")
+print("🔐 [NOTE] Global agent removed - each user now gets their own session!")
 
 # COMMAND ----------
 
@@ -699,9 +747,10 @@ print("🧪 [TEST] Starting tabular plan generation test...")
 try:
     # Test the tabular plan generator directly
     print(f"🧪 [TEST] Calling tabular_plan_generator...")
-    tabular_result = mvp_agent.tabular_plan_generator(
-        customer_info=mvp_agent._safe_str(sample_customer_info),
-        databricks_knowledge=mvp_agent._safe_str(sample_databricks_knowledge)
+    test_agent = test_session_manager.get_agent_for_user("test_user_1")
+    tabular_result = test_agent.tabular_plan_generator(
+        customer_info=test_agent._safe_str(sample_customer_info),
+        databricks_knowledge=test_agent._safe_str(sample_databricks_knowledge)
     )
     print(f"🧪 [TEST] Tabular plan generation completed")
     print("Implementation Plan:")
@@ -725,15 +774,16 @@ print("=== Testing Question Generation with Categories ===")
 print("🧪 [TEST] Starting question generation test...")
 try:
     # Test the question generator with categories
+    test_agent = test_session_manager.get_agent_for_user("test_user_2")
     current_info = "Customer wants to migrate from Snowflake to Databricks"
     context = "Initial conversation about migration planning"
-    question_categories = mvp_agent._format_question_categories()
+    question_categories = test_agent._format_question_categories()
     
     print(f"🧪 [TEST] Calling question_generator...")
-    question_result = mvp_agent.question_generator(
-        current_info=mvp_agent._safe_str(current_info),
-        conversation_context=mvp_agent._safe_str(context),
-        question_categories=mvp_agent._safe_str(question_categories)
+    question_result = test_agent.question_generator(
+        current_info=test_agent._safe_str(current_info),
+        conversation_context=test_agent._safe_str(context),
+        question_categories=test_agent._safe_str(question_categories)
     )
     print(f"🧪 [TEST] Question generation completed")
     
@@ -775,11 +825,12 @@ for i, test_input in enumerate(test_inputs, 1):
     print(f"🧪 [TEST] Testing intent classification for: '{test_input}'")
     try:
         # Test intent classification directly
-        context = mvp_agent._get_conversation_context()
+        test_agent = test_session_manager.get_agent_for_user("test_user_3")
+        context = test_agent._get_conversation_context()
         print(f"🧪 [TEST] Calling intent_classifier...")
-        intent_result = mvp_agent.intent_classifier(
-            user_input=mvp_agent._safe_str(test_input),
-            conversation_context=mvp_agent._safe_str(context)
+        intent_result = test_agent.intent_classifier(
+            user_input=test_agent._safe_str(test_input),
+            conversation_context=test_agent._safe_str(context)
         )
         print(f"🧪 [TEST] Intent classification completed")
         print(f"Intent: {intent_result.intent}")
@@ -807,10 +858,11 @@ test_inputs = [
 ]
 
 print("\n📊 Context Length Analysis:")
+test_agent = test_session_manager.get_agent_for_user("test_user_4")
 for i, test_input in enumerate(test_inputs, 1):
     print(f"\n--- Test {i}: {test_input} ---")
-    response = mvp_agent.process_user_input(test_input)
-    context_length = mvp_agent.storage.get_context_length()
+    response = test_agent.process_user_input(test_input)
+    context_length = test_agent.storage.get_context_length()
     print(f"   Context length: {context_length} characters")
     print(f"   Response length: {len(response)} characters")
 
@@ -835,17 +887,19 @@ import time
 
 # Test simple agents (should be faster with dspy.Predict)
 print("\n1. Testing Simple Agents (dspy.Predict):")
+test_agent_1 = test_session_manager.get_agent_for_user("test_user_5")
 start_time = time.time()
 test_input = "Hi, what can you help with?"
-response = mvp_agent.process_user_input(test_input)
+response = test_agent_1.process_user_input(test_input)
 simple_agent_time = time.time() - start_time
 print(f"   ✅ Greeting Handler: {simple_agent_time:.2f}s (using dspy.Predict)")
 
 # Test complex agents (should maintain quality with ChainOfThought)
 print("\n2. Testing Complex Agents (dspy.ChainOfThought):")
+test_agent_2 = test_session_manager.get_agent_for_user("test_user_6")
 start_time = time.time()
 test_input = "I want to migrate from Snowflake to Databricks"
-response = mvp_agent.process_user_input(test_input)
+response = test_agent_2.process_user_input(test_input)
 complex_agent_time = time.time() - start_time
 print(f"   ✅ Question Generator: {complex_agent_time:.2f}s (using ChainOfThought)")
 
@@ -865,8 +919,9 @@ print(f"   - Quality maintained: Complex reasoning preserved")
 # Test Flow 1: Greeting
 print("=== Testing Flow 1: Greeting ===")
 print("🧪 [TEST] Starting greeting flow test...")
+test_agent_flow1 = test_session_manager.get_agent_for_user("test_user_flow1")
 test_input_1 = "Hi, what can you help with?"
-response_1 = mvp_agent.process_user_input(test_input_1)
+response_1 = test_agent_flow1.process_user_input(test_input_1)
 print(f"🧪 [TEST] Greeting flow test completed")
 print(f"User: {test_input_1}")
 print(f"Agent: {response_1}")
@@ -877,8 +932,9 @@ print()
 # Test Flow 2: Information Collection
 print("=== Testing Flow 2: Information Collection ===")
 print("🧪 [TEST] Starting information collection flow test...")
+test_agent_flow2 = test_session_manager.get_agent_for_user("test_user_flow2")
 test_input_2 = "I'm working with a customer who wants to migrate from Snowflake to Databricks"
-response_2 = mvp_agent.process_user_input(test_input_2)
+response_2 = test_agent_flow2.process_user_input(test_input_2)
 print(f"🧪 [TEST] Information collection flow test completed")
 print(f"User: {test_input_2}")
 print(f"Agent: {response_2}")
@@ -889,8 +945,9 @@ print()
 # Test Flow 3: Feedback Request
 print("=== Testing Flow 3: Feedback Request ===")
 print("🧪 [TEST] Starting feedback request flow test...")
+test_agent_flow3 = test_session_manager.get_agent_for_user("test_user_flow3")
 test_input_3 = "How's the information collection going?"
-response_3 = mvp_agent.process_user_input(test_input_3)
+response_3 = test_agent_flow3.process_user_input(test_input_3)
 print(f"🧪 [TEST] Feedback request flow test completed")
 print(f"User: {test_input_3}")
 print(f"Agent: {response_3}")
@@ -901,12 +958,70 @@ print()
 # Test Flow 4: Plan Generation
 print("=== Testing Flow 4: Plan Generation ===")
 print("🧪 [TEST] Starting plan generation flow test...")
+test_agent_flow4 = test_session_manager.get_agent_for_user("test_user_flow4")
 test_input_4 = "/plan"
-response_4 = mvp_agent.process_user_input(test_input_4)
+response_4 = test_agent_flow4.process_user_input(test_input_4)
 print(f"🧪 [TEST] Plan generation flow test completed")
 print(f"User: {test_input_4}")
 print(f"Agent: {response_4}")
 print()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 14. Test Session Isolation
+
+# COMMAND ----------
+
+# Test session isolation to ensure no data bleeding between users
+print("=== Testing Session Isolation ===")
+print("🧪 [SESSION_TEST] Testing that users have isolated sessions...")
+
+# Create two different user sessions
+user1_agent = test_session_manager.get_agent_for_user("user_123")
+user2_agent = test_session_manager.get_agent_for_user("user_456")
+
+print("\n1. User 1 provides information:")
+user1_input = "I'm working with a customer who wants to migrate from Oracle to Databricks. The customer has 10TB of data."
+user1_response = user1_agent.process_user_input(user1_input)
+print(f"   User 1: {user1_input}")
+print(f"   Agent: {user1_response[:100]}...")
+
+print("\n2. User 2 provides different information:")
+user2_input = "I'm working with a customer who wants to migrate from Snowflake to Databricks. The customer has 5TB of data."
+user2_response = user2_agent.process_user_input(user2_input)
+print(f"   User 2: {user2_input}")
+print(f"   Agent: {user2_response[:100]}...")
+
+print("\n3. Check User 1's session context:")
+user1_context = user1_agent.storage.get_conversation_context()
+print(f"   User 1 context: {len(user1_context)} items")
+for i, item in enumerate(user1_context):
+    print(f"     {i+1}. {item['input'][:50]}...")
+
+print("\n4. Check User 2's session context:")
+user2_context = user2_agent.storage.get_conversation_context()
+print(f"   User 2 context: {len(user2_context)} items")
+for i, item in enumerate(user2_context):
+    print(f"     {i+1}. {item['input'][:50]}...")
+
+print("\n5. Verify isolation:")
+user1_has_oracle = any("Oracle" in item['input'] for item in user1_context)
+user1_has_snowflake = any("Snowflake" in item['input'] for item in user1_context)
+user2_has_oracle = any("Oracle" in item['input'] for item in user2_context)
+user2_has_snowflake = any("Snowflake" in item['input'] for item in user2_context)
+
+print(f"   User 1 has Oracle data: {user1_has_oracle}")
+print(f"   User 1 has Snowflake data: {user1_has_snowflake}")
+print(f"   User 2 has Oracle data: {user2_has_oracle}")
+print(f"   User 2 has Snowflake data: {user2_has_snowflake}")
+
+if user1_has_oracle and not user1_has_snowflake and user2_has_snowflake and not user2_has_oracle:
+    print("   ✅ SESSION ISOLATION WORKING: Users have separate, isolated sessions!")
+else:
+    print("   ❌ SESSION ISOLATION FAILED: Data is bleeding between users!")
+
+print(f"\n6. Active sessions: {test_session_manager.get_active_sessions()}")
 
 # COMMAND ----------
 
@@ -935,11 +1050,12 @@ from mlflow.types.responses import (
 )
 
 class MigrationPlanningResponsesAgent(ResponsesAgent):
-    """ResponsesAgent wrapper for Databricks Agent Framework compatibility."""
+    """ResponsesAgent wrapper for Databricks Agent Framework compatibility with session management."""
     
-    def __init__(self, dspy_agent):
+    def __init__(self, vector_search_endpoint, vector_index):
         super().__init__()
-        self.agent = dspy_agent
+        # Create session manager instead of single agent
+        self.session_manager = SessionManager(vector_search_endpoint, vector_index)
         # Configure DSPy LM for the agent
         self._configure_dspy_lm()
     
@@ -974,15 +1090,19 @@ class MigrationPlanningResponsesAgent(ResponsesAgent):
             print(f"Warning: Could not ensure DSPy LM configuration: {e}")
     
     def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
-        """Non-streaming prediction."""
+        """Non-streaming prediction with session management."""
         # Ensure DSPy LM is configured
         self._ensure_dspy_lm_configured()
         
-        # Extract user input from the request
+        # Extract user input and user ID from the request
         user_input = self._extract_user_input(request)
+        user_id = self._extract_user_id(request)
         
-        # Call the DSPy agent (use module() instead of module.forward())
-        response = self.agent.process_user_input(user_input)
+        # Get or create agent for this user
+        agent = self.session_manager.get_agent_for_user(user_id)
+        
+        # Call the DSPy agent for this user's session
+        response = agent.process_user_input(user_input)
         
         # Convert to ResponsesAgent format
         output_item = self.create_text_output_item(
@@ -1025,10 +1145,41 @@ class MigrationPlanningResponsesAgent(ResponsesAgent):
                         return str(message.content)
         
         return "Hello, I need help with migration planning."
+    
+    def _extract_user_id(self, request: ResponsesAgentRequest) -> str:
+        """Extract user ID from ResponsesAgentRequest."""
+        # Try to get user ID from request context or headers
+        if hasattr(request, 'context') and request.context:
+            if 'user_id' in request.context:
+                return str(request.context['user_id'])
+            if 'session_id' in request.context:
+                return str(request.context['session_id'])
+        
+        # Try to get from request headers if available
+        if hasattr(request, 'headers') and request.headers:
+            if 'user-id' in request.headers:
+                return str(request.headers['user-id'])
+            if 'session-id' in request.headers:
+                return str(request.headers['session-id'])
+        
+        # Try to get from the first message if it contains user info
+        if request.input and len(request.input) > 0:
+            first_message = request.input[0]
+            if hasattr(first_message, 'metadata') and first_message.metadata:
+                if 'user_id' in first_message.metadata:
+                    return str(first_message.metadata['user_id'])
+        
+        # Fallback: generate a unique user ID based on request
+        # This is not ideal for production but works for MVP
+        import hashlib
+        request_str = str(request.input) if request.input else "default"
+        user_id = hashlib.md5(request_str.encode()).hexdigest()[:8]
+        print(f"🔐 [USER_ID] Generated fallback user ID: {user_id}")
+        return user_id
 
-# Create the ResponsesAgent wrapper using MVP agent
-responses_agent = MigrationPlanningResponsesAgent(mvp_agent)
-print("ResponsesAgent wrapper created successfully with MVP agent!")
+# Create the ResponsesAgent wrapper with session management
+responses_agent = MigrationPlanningResponsesAgent(vector_search_endpoint, vector_index_name)
+print("ResponsesAgent wrapper created successfully with session management!")
 
 # COMMAND ----------
 
