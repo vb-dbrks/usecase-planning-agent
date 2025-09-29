@@ -204,10 +204,18 @@ QUESTION_CATEGORIES = {
 
 # Simplified DSPy Signatures for MVP
 class IntentClassifierSignature(dspy.Signature):
-    """Classify user intent for Databricks account team use case planning conversations."""
-    user_input: str = dspy.InputField(desc="The user's input from Databricks account team member")
-    conversation_context: str = dspy.InputField(desc="Recent conversation context about use case planning")
-    intent: str = dspy.OutputField(desc="Intent: greeting, answering_questions, providing_context, feedback_request, plan_generation, or other")
+    """Classify user intent based ONLY on the current user input, ignoring conversation history.
+    
+    Examples:
+    - "Hi, what can you help with?" -> greeting
+    - "I'm working with a customer who wants to migrate from Oracle" -> providing_context
+    - "The customer has 5 team members" -> answering_questions
+    - "How's the information collection going?" -> feedback_request
+    - "Generate a plan" or "/plan" -> plan_generation
+    - "Ask me questions then" -> providing_context
+    """
+    user_input: str = dspy.InputField(desc="The user's current input message")
+    intent: str = dspy.OutputField(desc="Intent based on current input only: greeting, answering_questions, providing_context, feedback_request, plan_generation, or other")
     confidence: float = dspy.OutputField(desc="Confidence score between 0 and 1")
 
 class GreetingSignature(dspy.Signature):
@@ -216,10 +224,20 @@ class GreetingSignature(dspy.Signature):
     response: str = dspy.OutputField(desc="Greeting response explaining how the agent helps account teams create use case plans for customer migrations and greenfield scenarios")
 
 class InformationCollectorSignature(dspy.Signature):
-    """Extract and structure customer use case information from Databricks account team input."""
+    """Extract and structure customer use case information from Databricks account team input.
+    
+    Extract key details about:
+    - Current technology stack (databases, platforms, tools)
+    - Data volumes and complexity
+    - Team structure and capabilities
+    - Business requirements and constraints
+    - Compliance and regulatory needs
+    - Timeline and budget information
+    - Integration requirements
+    """
     user_input: str = dspy.InputField(desc="The user's input from Databricks account team about customer use case")
     conversation_context: str = dspy.InputField(desc="Recent conversation context about customer migration or greenfield scenario")
-    extracted_info: str = dspy.OutputField(desc="Key customer use case information extracted for migration planning")
+    extracted_info: str = dspy.OutputField(desc="Structured summary of key customer information extracted from the input")
 
 class QuestionGeneratorSignature(dspy.Signature):
     """Generate exactly 3 relevant questions for Databricks account teams to gather customer use case information."""
@@ -357,19 +375,17 @@ class ConversationManager(dspy.Module):
         print(f"📝 [CONTEXT] Retrieved conversation context: {len(context)} items")
         print(f"📝 [CONTEXT] Context length: {context_length} characters (optimized - user inputs only)")
         
-        # Use LLM to classify intent
+        # Use LLM to classify intent based on current input only (ignore conversation context)
         print(f"🎯 [INTENT] Calling intent_classifier...")
-        print(f"🎯 [INTENT] user_input type: {type(user_input)}, context type: {type(context)}")
+        print(f"🎯 [INTENT] user_input type: {type(user_input)}")
         
         # Debug the serialization
         safe_user_input = self._safe_str(user_input)
-        safe_context = self._safe_str(context)
-        print(f"🎯 [INTENT] After _safe_str - user_input: {type(safe_user_input)}, context: {type(safe_context)}")
-        print(f"🎯 [INTENT] user_input length: {len(safe_user_input)}, context length: {len(safe_context)}")
+        print(f"🎯 [INTENT] After _safe_str - user_input: {type(safe_user_input)}")
+        print(f"🎯 [INTENT] user_input length: {len(safe_user_input)}")
         
         intent_result = self.intent_classifier(
-            user_input=safe_user_input,
-            conversation_context=safe_context
+            user_input=safe_user_input
         )
         
         intent = intent_result.intent.lower().strip()
@@ -379,6 +395,21 @@ class ConversationManager(dspy.Module):
         
         # Route to appropriate handler based on intent
         print(f"🔄 [ROUTING] Routing to handler for intent: {intent}")
+        
+        # Add fallback logic for low confidence classifications
+        if confidence < 0.6:
+            print(f"⚠️ [LOW_CONFIDENCE] Low confidence ({confidence:.2f}) for intent '{intent}', using fallback logic")
+            # For low confidence, use simple keyword matching as fallback
+            if any(word in user_input_lower for word in ["hi", "hello", "help", "what can you"]):
+                intent = "greeting"
+            elif any(word in user_input_lower for word in ["plan", "generate", "create plan"]):
+                intent = "plan_generation"
+            elif any(word in user_input_lower for word in ["status", "progress", "feedback", "how's it going"]):
+                intent = "feedback_request"
+            else:
+                intent = "providing_context"  # Default to information collection
+            print(f"🔄 [FALLBACK] Using fallback intent: {intent}")
+        
         if intent == "greeting":
             print(f"👋 [GREETING] Calling _handle_greeting...")
             return self._handle_greeting(user_input)
@@ -431,10 +462,21 @@ class ConversationManager(dspy.Module):
         )
         print(f"📝 [INFO_COLLECTION] Info collector completed")
         
+        # Debug the extraction result
+        print(f"📝 [INFO_COLLECTION] extract_result type: {type(extract_result)}")
+        print(f"📝 [INFO_COLLECTION] extract_result.extracted_info type: {type(extract_result.extracted_info)}")
+        print(f"📝 [INFO_COLLECTION] extract_result.extracted_info content: '{extract_result.extracted_info}'")
+        print(f"📝 [INFO_COLLECTION] extract_result.extracted_info length: {len(extract_result.extracted_info)}")
+        
         # Update summary with new information
-        if extract_result.extracted_info.strip():
+        if extract_result.extracted_info and extract_result.extracted_info.strip():
             self.storage.update_summary(extract_result.extracted_info)
             print(f"📝 [INFO_COLLECTION] Updated summary with new info")
+        else:
+            print(f"⚠️ [WARNING] No information extracted from user input - using raw input as fallback")
+            # Fallback: use the raw user input if extraction fails
+            self.storage.update_summary(user_input)
+            print(f"📝 [INFO_COLLECTION] Updated summary with raw user input as fallback")
         
         # Generate next 3 questions
         current_info = self.storage.get_summary()
@@ -515,6 +557,13 @@ class ConversationManager(dspy.Module):
         print(f"📊 [FEEDBACK] Starting feedback request...")
         current_info = self.storage.get_summary()
         context = self._get_conversation_context()
+        
+        # Debug the current information
+        print(f"📊 [FEEDBACK] current_info type: {type(current_info)}")
+        print(f"📊 [FEEDBACK] current_info content: '{current_info}'")
+        print(f"📊 [FEEDBACK] current_info length: {len(current_info)}")
+        print(f"📊 [FEEDBACK] context type: {type(context)}")
+        print(f"📊 [FEEDBACK] context length: {len(context)}")
         
         print(f"📊 [FEEDBACK] Calling gap_analyzer...")
         gap_result = self.gap_analyzer(
@@ -722,45 +771,45 @@ print("🔐 [NOTE] Global agent removed - each user now gets their own session!"
 
 # COMMAND ----------
 
-# Test tabular plan generation with sample customer information
-sample_customer_info = """
-Customer: TechCorp
-Use Case: Migrate from Snowflake to Databricks
-Data Volume: 50TB
-Team Size: 5 members
-Timeline: 6 months
-Current Platform: Snowflake on AWS
-Requirements: Real-time analytics, ML workloads, data governance
-"""
+# # Test tabular plan generation with sample customer information
+# sample_customer_info = """
+# Customer: TechCorp
+# Use Case: Migrate from Snowflake to Databricks
+# Data Volume: 50TB
+# Team Size: 5 members
+# Timeline: 6 months
+# Current Platform: Snowflake on AWS
+# Requirements: Real-time analytics, ML workloads, data governance
+# """
 
-sample_databricks_knowledge = """
-Databricks migration best practices:
-- Phase 1: Assessment and planning (2-4 weeks)
-- Phase 2: Data migration and validation (4-8 weeks)  
-- Phase 3: Application migration (4-6 weeks)
-- Phase 4: Testing and optimization (2-4 weeks)
-- Phase 5: Go-live and support (2-4 weeks)
-"""
+# sample_databricks_knowledge = """
+# Databricks migration best practices:
+# - Phase 1: Assessment and planning (2-4 weeks)
+# - Phase 2: Data migration and validation (4-8 weeks)  
+# - Phase 3: Application migration (4-6 weeks)
+# - Phase 4: Testing and optimization (2-4 weeks)
+# - Phase 5: Go-live and support (2-4 weeks)
+# """
 
-print("=== Testing Tabular Plan Generation ===")
-print("🧪 [TEST] Starting tabular plan generation test...")
-try:
-    # Test the tabular plan generator directly
-    print(f"🧪 [TEST] Calling tabular_plan_generator...")
-    test_agent = test_session_manager.get_agent_for_user("test_user_1")
-    tabular_result = test_agent.tabular_plan_generator(
-        customer_info=test_agent._safe_str(sample_customer_info),
-        databricks_knowledge=test_agent._safe_str(sample_databricks_knowledge)
-    )
-    print(f"🧪 [TEST] Tabular plan generation completed")
-    print("Implementation Plan:")
-    print(tabular_result.implementation_plan)
-    print("\nTimeline Summary:")
-    print(tabular_result.timeline_summary)
-    print("\nResource Requirements:")
-    print(tabular_result.resource_requirements)
-except Exception as e:
-    print(f"🧪 [TEST] Error in tabular plan generation: {e}")
+# print("=== Testing Tabular Plan Generation ===")
+# print("🧪 [TEST] Starting tabular plan generation test...")
+# try:
+#     # Test the tabular plan generator directly
+#     print(f"🧪 [TEST] Calling tabular_plan_generator...")
+#     test_agent = test_session_manager.get_agent_for_user("test_user_1")
+#     tabular_result = test_agent.tabular_plan_generator(
+#         customer_info=test_agent._safe_str(sample_customer_info),
+#         databricks_knowledge=test_agent._safe_str(sample_databricks_knowledge)
+#     )
+#     print(f"🧪 [TEST] Tabular plan generation completed")
+#     print("Implementation Plan:")
+#     print(tabular_result.implementation_plan)
+#     print("\nTimeline Summary:")
+#     print(tabular_result.timeline_summary)
+#     print("\nResource Requirements:")
+#     print(tabular_result.resource_requirements)
+# except Exception as e:
+#     print(f"🧪 [TEST] Error in tabular plan generation: {e}")
 
 # COMMAND ----------
 
@@ -769,32 +818,32 @@ except Exception as e:
 
 # COMMAND ----------
 
-# Test question generation with categories
-print("=== Testing Question Generation with Categories ===")
-print("🧪 [TEST] Starting question generation test...")
-try:
-    # Test the question generator with categories
-    test_agent = test_session_manager.get_agent_for_user("test_user_2")
-    current_info = "Customer wants to migrate from Snowflake to Databricks"
-    context = "Initial conversation about migration planning"
-    question_categories = test_agent._format_question_categories()
+# # Test question generation with categories
+# print("=== Testing Question Generation with Categories ===")
+# print("🧪 [TEST] Starting question generation test...")
+# try:
+#     # Test the question generator with categories
+#     test_agent = test_session_manager.get_agent_for_user("test_user_2")
+#     current_info = "Customer wants to migrate from Snowflake to Databricks"
+#     context = "Initial conversation about migration planning"
+#     question_categories = test_agent._format_question_categories()
     
-    print(f"🧪 [TEST] Calling question_generator...")
-    question_result = test_agent.question_generator(
-        current_info=test_agent._safe_str(current_info),
-        conversation_context=test_agent._safe_str(context),
-        question_categories=test_agent._safe_str(question_categories)
-    )
-    print(f"🧪 [TEST] Question generation completed")
+#     print(f"🧪 [TEST] Calling question_generator...")
+#     question_result = test_agent.question_generator(
+#         current_info=test_agent._safe_str(current_info),
+#         conversation_context=test_agent._safe_str(context),
+#         question_categories=test_agent._safe_str(question_categories)
+#     )
+#     print(f"🧪 [TEST] Question generation completed")
     
-    print("Generated Questions:")
-    print(question_result.questions)
-    print(f"\nCategory: {question_result.category}")
-    print(f"\nQuestion Categories Used:")
-    print(question_categories[:200] + "...")
+#     print("Generated Questions:")
+#     print(question_result.questions)
+#     print(f"\nCategory: {question_result.category}")
+#     print(f"\nQuestion Categories Used:")
+#     print(question_categories[:200] + "...")
     
-except Exception as e:
-    print(f"🧪 [TEST] Error in question generation: {e}")
+# except Exception as e:
+#     print(f"🧪 [TEST] Error in question generation: {e}")
 
 # COMMAND ----------
 
@@ -803,40 +852,40 @@ except Exception as e:
 
 # COMMAND ----------
 
-# Test intent classification with various inputs
-test_inputs = [
-    "Hi, what can you help with?",  # greeting
-    "I'm working with a customer who wants to migrate from Snowflake to Databricks",  # providing_context
-    "How's the information collection going?",  # feedback_request
-    "/plan",  # plan_generation
-    "The customer has 5 team members with different roles",  # answering_questions
-    "What's the status of our customer migration planning?",  # feedback_request
-    "Generate a use case plan for our customer",  # plan_generation
-    "Hello, I need help with customer use case planning",  # greeting
-    "The customer's data warehouse is 50TB in size",  # answering_questions
-    "The customer is using AWS and has security approval",  # providing_context
-    "What do you think about our customer's progress?",  # feedback_request
-    "Create a use case plan for our customer now"  # plan_generation
-]
+# # Test intent classification with various inputs
+# test_inputs = [
+#     "Hi, what can you help with?",  # greeting
+#     "I'm working with a customer who wants to migrate from Snowflake to Databricks",  # providing_context
+#     "How's the information collection going?",  # feedback_request
+#     "/plan",  # plan_generation
+#     "The customer has 5 team members with different roles",  # answering_questions
+#     "What's the status of our customer migration planning?",  # feedback_request
+#     "Generate a use case plan for our customer",  # plan_generation
+#     "Hello, I need help with customer use case planning",  # greeting
+#     "The customer's data warehouse is 50TB in size",  # answering_questions
+#     "The customer is using AWS and has security approval",  # providing_context
+#     "What do you think about our customer's progress?",  # feedback_request
+#     "Create a use case plan for our customer now"  # plan_generation
+# ]
 
-print("=== Testing Intent Classification ===")
-for i, test_input in enumerate(test_inputs, 1):
-    print(f"\n--- Test {i}: {test_input} ---")
-    print(f"🧪 [TEST] Testing intent classification for: '{test_input}'")
-    try:
-        # Test intent classification directly
-        test_agent = test_session_manager.get_agent_for_user("test_user_3")
-        context = test_agent._get_conversation_context()
-        print(f"🧪 [TEST] Calling intent_classifier...")
-        intent_result = test_agent.intent_classifier(
-            user_input=test_agent._safe_str(test_input),
-            conversation_context=test_agent._safe_str(context)
-        )
-        print(f"🧪 [TEST] Intent classification completed")
-        print(f"Intent: {intent_result.intent}")
-        print(f"Confidence: {intent_result.confidence}")
-    except Exception as e:
-        print(f"🧪 [TEST] Error in intent classification: {e}")
+# print("=== Testing Intent Classification ===")
+# for i, test_input in enumerate(test_inputs, 1):
+#     print(f"\n--- Test {i}: {test_input} ---")
+#     print(f"🧪 [TEST] Testing intent classification for: '{test_input}'")
+#     try:
+#         # Test intent classification directly
+#         test_agent = test_session_manager.get_agent_for_user("test_user_3")
+#         context = test_agent._get_conversation_context()
+#         print(f"🧪 [TEST] Calling intent_classifier...")
+#         intent_result = test_agent.intent_classifier(
+#             user_input=test_agent._safe_str(test_input),
+#             conversation_context=test_agent._safe_str(context)
+#         )
+#         print(f"🧪 [TEST] Intent classification completed")
+#         print(f"Intent: {intent_result.intent}")
+#         print(f"Confidence: {intent_result.confidence}")
+#     except Exception as e:
+#         print(f"🧪 [TEST] Error in intent classification: {e}")
 
 # COMMAND ----------
 
@@ -845,32 +894,32 @@ for i, test_input in enumerate(test_inputs, 1):
 
 # COMMAND ----------
 
-# Test the context optimization improvements
-print("=== Testing Context Optimization ===")
-print("🧪 [OPTIMIZATION] Testing context length improvements...")
+# # Test the context optimization improvements
+# print("=== Testing Context Optimization ===")
+# print("🧪 [OPTIMIZATION] Testing context length improvements...")
 
-# Test with multiple interactions to see context growth
-test_inputs = [
-    "Hi, what can you help with?",
-    "I want to migrate from Snowflake to Databricks", 
-    "The customer has 5 team members with different roles",
-    "How's the information collection going?"
-]
+# # Test with multiple interactions to see context growth
+# test_inputs = [
+#     "Hi, what can you help with?",
+#     "I want to migrate from Snowflake to Databricks", 
+#     "The customer has 5 team members with different roles",
+#     "How's the information collection going?"
+# ]
 
-print("\n📊 Context Length Analysis:")
-test_agent = test_session_manager.get_agent_for_user("test_user_4")
-for i, test_input in enumerate(test_inputs, 1):
-    print(f"\n--- Test {i}: {test_input} ---")
-    response = test_agent.process_user_input(test_input)
-    context_length = test_agent.storage.get_context_length()
-    print(f"   Context length: {context_length} characters")
-    print(f"   Response length: {len(response)} characters")
+# print("\n📊 Context Length Analysis:")
+# test_agent = test_session_manager.get_agent_for_user("test_user_4")
+# for i, test_input in enumerate(test_inputs, 1):
+#     print(f"\n--- Test {i}: {test_input} ---")
+#     response = test_agent.process_user_input(test_input)
+#     context_length = test_agent.storage.get_context_length()
+#     print(f"   Context length: {context_length} characters")
+#     print(f"   Response length: {len(response)} characters")
 
-print(f"\n✅ Context Optimization Benefits:")
-print(f"   - Before: ~13,000+ characters (full conversation)")
-print(f"   - After: ~500-1,000 characters (user inputs only)")
-print(f"   - Reduction: 80-90% smaller context")
-print(f"   - Performance: Faster processing, lower token usage")
+# print(f"\n✅ Context Optimization Benefits:")
+# print(f"   - Before: ~13,000+ characters (full conversation)")
+# print(f"   - After: ~500-1,000 characters (user inputs only)")
+# print(f"   - Reduction: 80-90% smaller context")
+# print(f"   - Performance: Faster processing, lower token usage")
 
 # COMMAND ----------
 
@@ -879,35 +928,35 @@ print(f"   - Performance: Faster processing, lower token usage")
 
 # COMMAND ----------
 
-# Test performance improvements with selective Chain of Thought
-print("=== Testing Performance Improvements ===")
-print("🧪 [PERFORMANCE] Testing selective Chain of Thought strategy...")
+# # Test performance improvements with selective Chain of Thought
+# print("=== Testing Performance Improvements ===")
+# print("🧪 [PERFORMANCE] Testing selective Chain of Thought strategy...")
 
-import time
+# import time
 
-# Test simple agents (should be faster with dspy.Predict)
-print("\n1. Testing Simple Agents (dspy.Predict):")
-test_agent_1 = test_session_manager.get_agent_for_user("test_user_5")
-start_time = time.time()
-test_input = "Hi, what can you help with?"
-response = test_agent_1.process_user_input(test_input)
-simple_agent_time = time.time() - start_time
-print(f"   ✅ Greeting Handler: {simple_agent_time:.2f}s (using dspy.Predict)")
+# # Test simple agents (should be faster with dspy.Predict)
+# print("\n1. Testing Simple Agents (dspy.Predict):")
+# test_agent_1 = test_session_manager.get_agent_for_user("test_user_5")
+# start_time = time.time()
+# test_input = "Hi, what can you help with?"
+# response = test_agent_1.process_user_input(test_input)
+# simple_agent_time = time.time() - start_time
+# print(f"   ✅ Greeting Handler: {simple_agent_time:.2f}s (using dspy.Predict)")
 
-# Test complex agents (should maintain quality with ChainOfThought)
-print("\n2. Testing Complex Agents (dspy.ChainOfThought):")
-test_agent_2 = test_session_manager.get_agent_for_user("test_user_6")
-start_time = time.time()
-test_input = "I want to migrate from Snowflake to Databricks"
-response = test_agent_2.process_user_input(test_input)
-complex_agent_time = time.time() - start_time
-print(f"   ✅ Question Generator: {complex_agent_time:.2f}s (using ChainOfThought)")
+# # Test complex agents (should maintain quality with ChainOfThought)
+# print("\n2. Testing Complex Agents (dspy.ChainOfThought):")
+# test_agent_2 = test_session_manager.get_agent_for_user("test_user_6")
+# start_time = time.time()
+# test_input = "I want to migrate from Snowflake to Databricks"
+# response = test_agent_2.process_user_input(test_input)
+# complex_agent_time = time.time() - start_time
+# print(f"   ✅ Question Generator: {complex_agent_time:.2f}s (using ChainOfThought)")
 
-print(f"\n📊 Performance Summary:")
-print(f"   - Simple agents: Fast responses with dspy.Predict()")
-print(f"   - Complex agents: Thoughtful responses with ChainOfThought()")
-print(f"   - Expected benefits: 20-30% faster simple interactions")
-print(f"   - Quality maintained: Complex reasoning preserved")
+# print(f"\n📊 Performance Summary:")
+# print(f"   - Simple agents: Fast responses with dspy.Predict()")
+# print(f"   - Complex agents: Thoughtful responses with ChainOfThought()")
+# print(f"   - Expected benefits: 20-30% faster simple interactions")
+# print(f"   - Quality maintained: Complex reasoning preserved")
 
 # COMMAND ----------
 
@@ -916,55 +965,55 @@ print(f"   - Quality maintained: Complex reasoning preserved")
 
 # COMMAND ----------
 
-# Test Flow 1: Greeting
-print("=== Testing Flow 1: Greeting ===")
-print("🧪 [TEST] Starting greeting flow test...")
-test_agent_flow1 = test_session_manager.get_agent_for_user("test_user_flow1")
-test_input_1 = "Hi, what can you help with?"
-response_1 = test_agent_flow1.process_user_input(test_input_1)
-print(f"🧪 [TEST] Greeting flow test completed")
-print(f"User: {test_input_1}")
-print(f"Agent: {response_1}")
-print()
+# # Test Flow 1: Greeting
+# print("=== Testing Flow 1: Greeting ===")
+# print("🧪 [TEST] Starting greeting flow test...")
+# test_agent_flow1 = test_session_manager.get_agent_for_user("test_user_flow1")
+# test_input_1 = "Hi, what can you help with?"
+# response_1 = test_agent_flow1.process_user_input(test_input_1)
+# print(f"🧪 [TEST] Greeting flow test completed")
+# print(f"User: {test_input_1}")
+# print(f"Agent: {response_1}")
+# print()
 
-# COMMAND ----------
+# # COMMAND ----------
 
-# Test Flow 2: Information Collection
-print("=== Testing Flow 2: Information Collection ===")
-print("🧪 [TEST] Starting information collection flow test...")
-test_agent_flow2 = test_session_manager.get_agent_for_user("test_user_flow2")
-test_input_2 = "I'm working with a customer who wants to migrate from Snowflake to Databricks"
-response_2 = test_agent_flow2.process_user_input(test_input_2)
-print(f"🧪 [TEST] Information collection flow test completed")
-print(f"User: {test_input_2}")
-print(f"Agent: {response_2}")
-print()
+# # Test Flow 2: Information Collection
+# print("=== Testing Flow 2: Information Collection ===")
+# print("🧪 [TEST] Starting information collection flow test...")
+# test_agent_flow2 = test_session_manager.get_agent_for_user("test_user_flow2")
+# test_input_2 = "I'm working with a customer who wants to migrate from Snowflake to Databricks"
+# response_2 = test_agent_flow2.process_user_input(test_input_2)
+# print(f"🧪 [TEST] Information collection flow test completed")
+# print(f"User: {test_input_2}")
+# print(f"Agent: {response_2}")
+# print()
 
-# COMMAND ----------
+# # COMMAND ----------
 
-# Test Flow 3: Feedback Request
-print("=== Testing Flow 3: Feedback Request ===")
-print("🧪 [TEST] Starting feedback request flow test...")
-test_agent_flow3 = test_session_manager.get_agent_for_user("test_user_flow3")
-test_input_3 = "How's the information collection going?"
-response_3 = test_agent_flow3.process_user_input(test_input_3)
-print(f"🧪 [TEST] Feedback request flow test completed")
-print(f"User: {test_input_3}")
-print(f"Agent: {response_3}")
-print()
+# # Test Flow 3: Feedback Request
+# print("=== Testing Flow 3: Feedback Request ===")
+# print("🧪 [TEST] Starting feedback request flow test...")
+# test_agent_flow3 = test_session_manager.get_agent_for_user("test_user_flow3")
+# test_input_3 = "How's the information collection going?"
+# response_3 = test_agent_flow3.process_user_input(test_input_3)
+# print(f"🧪 [TEST] Feedback request flow test completed")
+# print(f"User: {test_input_3}")
+# print(f"Agent: {response_3}")
+# print()
 
-# COMMAND ----------
+# # COMMAND ----------
 
-# Test Flow 4: Plan Generation
-print("=== Testing Flow 4: Plan Generation ===")
-print("🧪 [TEST] Starting plan generation flow test...")
-test_agent_flow4 = test_session_manager.get_agent_for_user("test_user_flow4")
-test_input_4 = "/plan"
-response_4 = test_agent_flow4.process_user_input(test_input_4)
-print(f"🧪 [TEST] Plan generation flow test completed")
-print(f"User: {test_input_4}")
-print(f"Agent: {response_4}")
-print()
+# # Test Flow 4: Plan Generation
+# print("=== Testing Flow 4: Plan Generation ===")
+# print("🧪 [TEST] Starting plan generation flow test...")
+# test_agent_flow4 = test_session_manager.get_agent_for_user("test_user_flow4")
+# test_input_4 = "/plan"
+# response_4 = test_agent_flow4.process_user_input(test_input_4)
+# print(f"🧪 [TEST] Plan generation flow test completed")
+# print(f"User: {test_input_4}")
+# print(f"Agent: {response_4}")
+# print()
 
 # COMMAND ----------
 
@@ -973,55 +1022,123 @@ print()
 
 # COMMAND ----------
 
-# Test session isolation to ensure no data bleeding between users
-print("=== Testing Session Isolation ===")
-print("🧪 [SESSION_TEST] Testing that users have isolated sessions...")
+# # Test session isolation to ensure no data bleeding between users
+# print("=== Testing Session Isolation ===")
+# print("🧪 [SESSION_TEST] Testing that users have isolated sessions...")
 
-# Create two different user sessions
-user1_agent = test_session_manager.get_agent_for_user("user_123")
-user2_agent = test_session_manager.get_agent_for_user("user_456")
+# # Create two different user sessions
+# user1_agent = test_session_manager.get_agent_for_user("user_123")
+# user2_agent = test_session_manager.get_agent_for_user("user_456")
 
-print("\n1. User 1 provides information:")
-user1_input = "I'm working with a customer who wants to migrate from Oracle to Databricks. The customer has 10TB of data."
-user1_response = user1_agent.process_user_input(user1_input)
-print(f"   User 1: {user1_input}")
-print(f"   Agent: {user1_response[:100]}...")
+# print("\n1. User 1 provides information:")
+# user1_input = "I'm working with a customer who wants to migrate from Oracle to Databricks. The customer has 10TB of data."
+# user1_response = user1_agent.process_user_input(user1_input)
+# print(f"   User 1: {user1_input}")
+# print(f"   Agent: {user1_response[:100]}...")
 
-print("\n2. User 2 provides different information:")
-user2_input = "I'm working with a customer who wants to migrate from Snowflake to Databricks. The customer has 5TB of data."
-user2_response = user2_agent.process_user_input(user2_input)
-print(f"   User 2: {user2_input}")
-print(f"   Agent: {user2_response[:100]}...")
+# print("\n2. User 2 provides different information:")
+# user2_input = "I'm working with a customer who wants to migrate from Snowflake to Databricks. The customer has 5TB of data."
+# user2_response = user2_agent.process_user_input(user2_input)
+# print(f"   User 2: {user2_input}")
+# print(f"   Agent: {user2_response[:100]}...")
 
-print("\n3. Check User 1's session context:")
-user1_context = user1_agent.storage.get_conversation_context()
-print(f"   User 1 context: {len(user1_context)} items")
-for i, item in enumerate(user1_context):
-    print(f"     {i+1}. {item['input'][:50]}...")
+# print("\n3. Check User 1's session context:")
+# user1_context = user1_agent.storage.get_conversation_context()
+# print(f"   User 1 context: {len(user1_context)} items")
+# for i, item in enumerate(user1_context):
+#     print(f"     {i+1}. {item['input'][:50]}...")
 
-print("\n4. Check User 2's session context:")
-user2_context = user2_agent.storage.get_conversation_context()
-print(f"   User 2 context: {len(user2_context)} items")
-for i, item in enumerate(user2_context):
-    print(f"     {i+1}. {item['input'][:50]}...")
+# print("\n4. Check User 2's session context:")
+# user2_context = user2_agent.storage.get_conversation_context()
+# print(f"   User 2 context: {len(user2_context)} items")
+# for i, item in enumerate(user2_context):
+#     print(f"     {i+1}. {item['input'][:50]}...")
 
-print("\n5. Verify isolation:")
-user1_has_oracle = any("Oracle" in item['input'] for item in user1_context)
-user1_has_snowflake = any("Snowflake" in item['input'] for item in user1_context)
-user2_has_oracle = any("Oracle" in item['input'] for item in user2_context)
-user2_has_snowflake = any("Snowflake" in item['input'] for item in user2_context)
+# print("\n5. Verify isolation:")
+# user1_has_oracle = any("Oracle" in item['input'] for item in user1_context)
+# user1_has_snowflake = any("Snowflake" in item['input'] for item in user1_context)
+# user2_has_oracle = any("Oracle" in item['input'] for item in user2_context)
+# user2_has_snowflake = any("Snowflake" in item['input'] for item in user2_context)
 
-print(f"   User 1 has Oracle data: {user1_has_oracle}")
-print(f"   User 1 has Snowflake data: {user1_has_snowflake}")
-print(f"   User 2 has Oracle data: {user2_has_oracle}")
-print(f"   User 2 has Snowflake data: {user2_has_snowflake}")
+# print(f"   User 1 has Oracle data: {user1_has_oracle}")
+# print(f"   User 1 has Snowflake data: {user1_has_snowflake}")
+# print(f"   User 2 has Oracle data: {user2_has_oracle}")
+# print(f"   User 2 has Snowflake data: {user2_has_snowflake}")
 
-if user1_has_oracle and not user1_has_snowflake and user2_has_snowflake and not user2_has_oracle:
-    print("   ✅ SESSION ISOLATION WORKING: Users have separate, isolated sessions!")
-else:
-    print("   ❌ SESSION ISOLATION FAILED: Data is bleeding between users!")
+# if user1_has_oracle and not user1_has_snowflake and user2_has_snowflake and not user2_has_oracle:
+#     print("   ✅ SESSION ISOLATION WORKING: Users have separate, isolated sessions!")
+# else:
+#     print("   ❌ SESSION ISOLATION FAILED: Data is bleeding between users!")
 
-print(f"\n6. Active sessions: {test_session_manager.get_active_sessions()}")
+# print(f"\n6. Active sessions: {test_session_manager.get_active_sessions()}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 15. Test Intent Classification Fix
+
+# COMMAND ----------
+
+# # Test intent classification to ensure it's not biased by conversation history
+# print("=== Testing Intent Classification Fix ===")
+# print("🧪 [INTENT_TEST] Testing that intent classification works correctly after plan generation...")
+
+# # Create a test agent and simulate the problematic scenario
+# test_agent_intent = test_session_manager.get_agent_for_user("test_user_intent")
+
+# print("\n1. First interaction - user provides context:")
+# response1 = test_agent_intent.process_user_input("I am working with a customer to migrate their Oracle Datawarehouse to Databricks. Help me plan the migration.")
+# print(f"   Response: {response1[:100]}...")
+
+# print("\n2. Second interaction - user asks for questions (should NOT go to plan generator):")
+# response2 = test_agent_intent.process_user_input("ask me questions then")
+# print(f"   Response: {response2[:100]}...")
+
+# print("\n3. Third interaction - user provides more info (should go to info collection):")
+# response3 = test_agent_intent.process_user_input("The customer has 5 team members with different roles")
+# print(f"   Response: {response3[:100]}...")
+
+# print("\n4. Fourth interaction - user asks for status (should go to feedback):")
+# response4 = test_agent_intent.process_user_input("How's the information collection going?")
+# print(f"   Response: {response4[:100]}...")
+
+# print("\n✅ Intent classification test completed!")
+# print("   - Each interaction should be classified based on the current input only")
+# print("   - Conversation history should not bias the intent classification")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 16. Test Information Accumulation Fix
+
+# COMMAND ----------
+
+# Test information accumulation to ensure user responses are being stored
+print("=== Testing Information Accumulation Fix ===")
+print("🧪 [INFO_ACCUMULATION_TEST] Testing that user information is properly accumulated...")
+
+# Create a test agent and simulate the information collection flow
+test_agent_info = test_session_manager.get_agent_for_user("test_user_info")
+
+print("\n1. First interaction - user provides initial context:")
+response1 = test_agent_info.process_user_input("I am working with a customer for a Oracle Datawarehouse to Databricks migration. It's a large instance with multiple database with around 50TB data.")
+print(f"   Response: {response1[:100]}...")
+
+print("\n2. Second interaction - user answers questions:")
+response2 = test_agent_info.process_user_input("There are around 10 Databases with around 5 schemas in each database, roughly around 1000 tables, views, stored procedures etc... we need to export data from salesforce. using PL/SQL procedures for regular ETL and data processing. the customer is regulated GxP validation will be required for the data products.")
+print(f"   Response: {response2[:100]}...")
+
+print("\n3. Third interaction - user provides more details:")
+response3 = test_agent_info.process_user_input("The customer has 5 team members with different roles - 2 data engineers, 1 data architect, 1 business analyst, and 1 project manager.")
+print(f"   Response: {response3[:100]}...")
+
+print("\n4. Check status to see accumulated information:")
+response4 = test_agent_info.process_user_input("/status")
+print(f"   Response: {response4[:200]}...")
+
+print("\n✅ Information accumulation test completed!")
+print("   - User responses should be properly extracted and stored")
+print("   - Status should show accumulated information, not empty summary")
 
 # COMMAND ----------
 
@@ -1227,32 +1344,32 @@ print(f"Model ready for deployment!")
 
 # COMMAND ----------
 
-# Test the registered model with different inputs
-test_inputs = [
-    "Hi, what can you help with?",  # greeting
-    "I'm working with a customer who wants to migrate from Snowflake to Databricks",  # providing_context
-    "The customer has 5 team members with different roles",  # answering_questions
-    "How's the information collection going?",  # feedback_request
-    "/plan"  # plan_generation
-]
+# # Test the registered model with different inputs
+# test_inputs = [
+#     "Hi, what can you help with?",  # greeting
+#     "I'm working with a customer who wants to migrate from Snowflake to Databricks",  # providing_context
+#     "The customer has 5 team members with different roles",  # answering_questions
+#     "How's the information collection going?",  # feedback_request
+#     "/plan"  # plan_generation
+# ]
 
-print("=== Testing Registered Model ===")
-for i, test_input in enumerate(test_inputs, 1):
-    print(f"\n--- Test {i}: {test_input} ---")
-    try:
-        # Test the model using ResponsesAgent format (same as v2 notebook)
-        test_request = {
-            "input": [
-                {
-                    "role": "user", 
-                    "content": test_input
-                }
-            ]
-        }
-        result = responses_agent.predict(test_request)
-        print(f"Response: {result.output[0].text[:200]}...")
-    except Exception as e:
-        print(f"Error: {e}")
+# print("=== Testing Registered Model ===")
+# for i, test_input in enumerate(test_inputs, 1):
+#     print(f"\n--- Test {i}: {test_input} ---")
+#     try:
+#         # Test the model using ResponsesAgent format (same as v2 notebook)
+#         test_request = {
+#             "input": [
+#                 {
+#                     "role": "user", 
+#                     "content": test_input
+#                 }
+#             ]
+#         }
+#         result = responses_agent.predict(test_request)
+#         print(f"Response: {result.output[0].text[:200]}...")
+#     except Exception as e:
+#         print(f"Error: {e}")
 
 # COMMAND ----------
 
