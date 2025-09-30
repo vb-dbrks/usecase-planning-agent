@@ -1,16 +1,22 @@
-# Migration Planning Agent - DSPy Architecture
+# Use Case Delivery Agent - Simplified DSPy Architecture
 
 ## Overview
 
-This project implements a sophisticated AI agent for Oracle to Databricks migration planning using DSPy (Declarative Self-improving Python) framework. The agent provides conversational AI capabilities through a chat interface, intelligently guiding users through the migration planning process.
+This project implements a AI agent for Databricks account teams to create use case plans for customer migrations and greenfield scenarios. The agent uses DSPy (Declarative Self-improving Python) framework with MLflow's built-in conversation management, providing conversational AI capabilities through a chat interface to intelligently guide account teams through use case planning.
 
-## Architecture Diagram
+## High-Level Architecture Overview
+
+![Use Case Planning App Architecture](docs/highlevel_arch.jpeg)
+
+*Figure 1: High-level system architecture showing the multi-agent compound AI system, web application, model serving, and data pipeline components.*
+
+## Detailed Architecture Diagram
 
 ```mermaid
 graph TB
     subgraph "Chat UI Layer"
         UI[React Chat UI]
-        API[FastAPI Backend]
+        API[Express.js Backend]
     end
     
     subgraph "Databricks Model Serving"
@@ -22,40 +28,36 @@ graph TB
         VERSION[Model Version]
     end
     
-    subgraph "Main Agent - MigrationPlanningAgent"
-        AGENT[MigrationPlanningAgent]
+    subgraph "Simplified Agent - SimplifiedMigrationPlanningAgent"
+        AGENT[SimplifiedMigrationPlanningAgent]
         
-        subgraph "Conversational AI Modules"
-            CTX[ProjectContextExtractionModule]
-            CONV[ConversationUnderstandingModule]
-            RESP[IntelligentResponseGenerationModule]
+        subgraph "Conversation Management"
+            CM[SimplifiedConversationManager]
+            INTENT[Intent Classification]
+            GREET[Greeting Handler]
+            INFO[Information Collector]
         end
         
-        subgraph "Core Planning Modules"
-            QGEN[QuestionGenerationModule]
-            DRET[DocumentRetrievalModule]
-            AANL[AnswerAnalysisModule]
-            PGEN[MigrationPlanGenerationModule]
-            PSCR[PlanCompletenessScoringModule]
-            RASS[RiskAssessmentModule]
+        subgraph "Planning Modules"
+            QGEN[Question Generator]
+            GAP[Gap Analysis]
+            PLAN[Plan Generator]
+            TABULAR[Tabular Plan Generator]
         end
         
         subgraph "DSPy Signatures"
-            QSIG[QuestionGenerator]
-            DSIG[DocumentRetriever]
-            ASIG[AnswerAnalyzer]
-            PSIG[MigrationPlanGenerator]
-            SSIG[PlanCompletenessScorer]
-            RSIG[RiskAssessor]
-            CSIG[ProjectContextExtractor]
-            USIG[ConversationUnderstanding]
-            ISIG[IntelligentResponseGenerator]
+            ISIG[IntentClassifierSignature]
+            GSIG[GreetingSignature]
+            ICSIG[InformationCollectorSignature]
+            QGSIG[QuestionGeneratorSignature]
+            GASIG[GapAnalysisSignature]
+            PGSIG[PlanGeneratorSignature]
+            TPGSIG[TabularPlanGeneratorSignature]
         end
     end
     
     subgraph "External Services"
-        VS[Vector Search]
-        DB[Databricks DBRX Model]
+        DB[Databricks Claude Sonnet 4]
     end
     
     UI --> API
@@ -64,36 +66,30 @@ graph TB
     MODEL --> VERSION
     VERSION --> AGENT
     
-    AGENT --> CTX
-    AGENT --> CONV
-    AGENT --> RESP
-    AGENT --> QGEN
-    AGENT --> DRET
-    AGENT --> AANL
-    AGENT --> PGEN
-    AGENT --> PSCR
-    AGENT --> RASS
+    AGENT --> CM
+    CM --> INTENT
+    CM --> GREET
+    CM --> INFO
+    CM --> QGEN
+    CM --> GAP
+    CM --> PLAN
+    CM --> TABULAR
     
-    CTX --> CSIG
-    CONV --> USIG
-    RESP --> ISIG
-    QGEN --> QSIG
-    DRET --> DSIG
-    AANL --> ASIG
-    PGEN --> PSIG
-    PSCR --> SSIG
-    RASS --> RSIG
+    INTENT --> ISIG
+    GREET --> GSIG
+    INFO --> ICSIG
+    QGEN --> QGSIG
+    GAP --> GASIG
+    PLAN --> PGSIG
+    TABULAR --> TPGSIG
     
-    DRET --> VS
-    QSIG --> DB
-    DSIG --> DB
-    ASIG --> DB
-    PSIG --> DB
-    SSIG --> DB
-    RSIG --> DB
-    CSIG --> DB
-    USIG --> DB
     ISIG --> DB
+    GSIG --> DB
+    ICSIG --> DB
+    QGSIG --> DB
+    GASIG --> DB
+    PGSIG --> DB
+    TPGSIG --> DB
 ```
 
 ## Component Architecture
@@ -102,109 +98,113 @@ graph TB
 DSPy signatures define the input/output structure and behavior for each AI task:
 
 #### Core Planning Signatures
-- **`QuestionGenerator`**: Generates relevant questions for migration planning categories
-- **`DocumentRetriever`**: Retrieves relevant documents using vector search
-- **`AnswerAnalyzer`**: Analyzes user answers and extracts insights
-- **`MigrationPlanGenerator`**: Creates comprehensive migration plans
-- **`PlanCompletenessScorer`**: Scores plan completeness and maturity
-- **`RiskAssessor`**: Assesses risks and provides mitigation strategies
 
-#### Conversational AI Signatures
-- **`ProjectContextExtractor`**: Extracts structured context from user descriptions
-- **`ConversationUnderstanding`**: Understands user intent and conversation flow
-- **`IntelligentResponseGenerator`**: Generates natural, helpful responses
+- **`IntentClassifierSignature`**: Classifies user intent (greeting, providing_context, answering_questions, feedback_request, plan_generation)
+- **`GreetingSignature`**: Handles greetings and explains capabilities for Databricks account teams
+- **`InformationCollectorSignature`**: Extracts and structures customer use case information
+- **`QuestionGeneratorSignature`**: Generates exactly 3 relevant questions for gathering customer information
+- **`GapAnalysisSignature`**: Analyzes information completeness and identifies gaps
+- **`PlanGeneratorSignature`**: Generates comprehensive tabular use case plans
+- **`TabularPlanGeneratorSignature`**: Creates detailed implementation plans with phases, activities, and timelines
 
-### 2. DSPy Modules (AI Components)
-Modules wrap signatures with ChainOfThought reasoning:
-
-#### Core Planning Modules
-- **`QuestionGenerationModule`**: Generates questions for specific planning categories
-- **`DocumentRetrievalModule`**: Retrieves relevant documents using vector search
-- **`AnswerAnalysisModule`**: Analyzes answers and extracts key insights
-- **`MigrationPlanGenerationModule`**: Generates comprehensive migration plans
-- **`PlanCompletenessScoringModule`**: Scores plan completeness and maturity
-- **`RiskAssessmentModule`**: Assesses risks and provides mitigation strategies
-
-#### Conversational AI Modules
-- **`ProjectContextExtractionModule`**: Extracts structured project context
-- **`ConversationUnderstandingModule`**: Understands user intent and context
-- **`IntelligentResponseGenerationModule`**: Generates intelligent responses
-
-### 3. Main Agent - MigrationPlanningAgent
-The orchestration agent that coordinates all modules:
+### 2. Simplified Conversation Manager
+The `SimplifiedConversationManager` handles all conversation logic using MLflow's built-in context management:
 
 ```python
-class MigrationPlanningAgent(dspy.Module):
-    def __init__(self, vector_search_endpoint, vector_search_index):
-        # Initialize all modules
-        self.question_generator = QuestionGenerationModule()
-        self.document_retriever = DocumentRetrievalModule(...)
-        # ... other modules
+class SimplifiedConversationManager:
+    def __init__(self, lm, rm):
+        # Initialize DSPy components with selective Chain of Thought strategy
+        self.intent_classifier = dspy.Predict(IntentClassifierSignature)
+        self.greeting_handler = dspy.Predict(GreetingSignature)
+        self.information_collector = dspy.Predict(InformationCollectorSignature)
+        self.question_generator = dspy.ChainOfThought(QuestionGeneratorSignature)
+        self.gap_analyzer = dspy.ChainOfThought(GapAnalysisSignature)
+        self.plan_generator = dspy.ChainOfThought(PlanGeneratorSignature)
+        self.tabular_plan_generator = dspy.ChainOfThought(TabularPlanGeneratorSignature)
         
-    def process_user_input(self, user_input: str):
-        """Main conversational interface"""
-        # Handle different user intents
-        # Coordinate appropriate modules
+    def process_user_input(self, user_input: str, context: Optional[Dict], user_id: str, conversation_id: str):
+        """Process user input with conversation context"""
+        # Classify intent and route to appropriate handler
+        # Update conversation state
         # Return structured response
+```
+
+### 3. Main Agent - SimplifiedMigrationPlanningAgent
+The simplified orchestration agent using MLflow's ResponsesAgent:
+
+```python
+class SimplifiedMigrationPlanningAgent(ResponsesAgent):
+    def __init__(self):
+        super().__init__()
+        self.conversation_manager = SimplifiedConversationManager(lm, rm)
         
-    def forward(self, inputs: str):
-        """MLflow deployment interface"""
-        # Convert process_user_input result to DSPy Prediction
+    def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
+        """Process request using MLflow's built-in context management"""
+        # Extract user input and context
+        # Process with conversation manager
+        # Return MLflow-compatible response
 ```
 
 ## Data Flow
 
 ### 1. User Interaction Flow
+
 ```
-User Input → Chat UI → FastAPI → Model Serving → MigrationPlanningAgent
+User Input → Chat UI → Express.js Backend → Model Serving → SimplifiedMigrationPlanningAgent
                                                       ↓
-Response ← Chat UI ← FastAPI ← Model Serving ← DSPy Prediction
+Response ← Chat UI ← Express.js Backend ← Model Serving ← MLflow ResponsesAgentResponse
 ```
 
 ### 2. Agent Processing Flow
+
 ```
-User Input → Conversation Understanding → Intent Classification
+User Input → Intent Classification → Route to Handler:
                     ↓
-Project Context Extraction (if first interaction)
+- Greeting Handler (for greetings)
+- Information Collector (for context/answers)
+- Question Generator (for follow-up questions)
+- Gap Analyzer (for feedback requests)
+- Plan Generator (for plan generation)
                     ↓
-Appropriate Module Selection:
-- Question Generation
-- Answer Analysis  
-- Plan Generation
-- Risk Assessment
-                    ↓
-Response Generation → DSPy Prediction
+Response Generation → MLflow ResponsesAgentResponse
 ```
 
 ### 3. Planning Categories
-The agent guides users through these planning categories:
-- **Resource & Team**: Team composition, skills, roles
-- **Technical Scope & Architecture**: Data volume, pipelines, architecture
-- **Customer Background & Drivers**: Business drivers, timeline, constraints
-- **Current Process Maturity**: Existing processes, tools, practices
-- **Performance & Scalability**: Performance requirements, scaling needs
-- **Security & Compliance**: Security requirements, compliance needs
+
+The agent guides account teams through these planning categories:
+
+- **Resource & Team**: Team composition, skills, roles, training
+- **Customer Background & Drivers**: Business drivers, timeline, constraints, cloud adoption
+- **Technical Scope & Architecture**: Data volume, pipelines, architecture, migration approach
+- **Current Process Maturity**: Existing processes, tools, practices, governance
+- **Performance & Scalability**: Performance requirements, scaling needs, bottlenecks
+- **Security & Compliance**: Security requirements, compliance standards, access control
 
 ## Key Features
 
 ### 1. Conversational AI
-- **Natural Language Understanding**: Users can start with "I need to migrate Oracle to Databricks"
-- **Context Awareness**: Maintains conversation state and project context
-- **Intent Recognition**: Understands different user intents (questions, answers, requests)
-- **Intelligent Responses**: Generates helpful, contextual responses
+
+- **Natural Language Understanding**: Account teams can start with "I'm working with a customer who wants to migrate from Oracle"
+- **Context Awareness**: Maintains conversation state and customer context using MLflow's built-in management
+- **Intent Recognition**: Understands different user intents (greeting, providing_context, answering_questions, feedback_request, plan_generation)
+- **Intelligent Responses**: Generates helpful, contextual responses for account teams
 
 ### 2. Progressive Planning
-- **Category-based Questions**: Asks relevant questions for each planning category
-- **Context Building**: Builds understanding progressively through conversation
-- **Plan Generation**: Creates comprehensive migration plans when ready
-- **Completeness Scoring**: Tracks plan maturity and completeness
 
-### 3. Vector Search Integration
-- **Document Retrieval**: Retrieves relevant migration documents
-- **Knowledge Base**: Uses vector search for contextual information
-- **RAG (Retrieval Augmented Generation)**: Enhances responses with relevant documents
+- **Category-based Questions**: Asks exactly 3 relevant questions for each planning category
+- **Context Building**: Builds understanding progressively through conversation
+- **Plan Generation**: Creates comprehensive tabular use case plans when ready
+- **Gap Analysis**: Tracks information completeness and identifies missing areas
+
+### 3. Simplified Architecture
+
+- **MLflow Integration**: Uses MLflow's built-in conversation management
+- **Reduced Complexity**: ~70% less code than the original implementation
+- **Better Performance**: Selective Chain of Thought strategy for optimal performance
+- **Easier Debugging**: Built-in debug information and MLflow's native tracing
 
 ### 4. MLflow Integration
+
 - **Model Registry**: Models are registered in Unity Catalog
 - **Model Serving**: Deployed to Databricks Model Serving
 - **Versioning**: Supports model versioning and A/B testing
@@ -215,19 +215,32 @@ The agent guides users through these planning categories:
 ### Input Format
 ```json
 {
-  "inputs": "I need to migrate our Oracle data warehouse to Databricks"
+  "input": [
+    {
+      "role": "user",
+      "content": "I'm working with a customer who wants to migrate from Oracle to Databricks"
+    }
+  ],
+  "context": {
+    "conversation_id": "conv_123",
+    "user_id": "user_456"
+  }
 }
 ```
 
 ### Output Format
 ```json
 {
-  "predictions": [
+  "output": [
     {
-      "response": "Great! I understand you're working on: Oracle data warehouse migration to Databricks\n\nLet me help you plan this migration. I'll start by asking some questions about Resource & Team.\n\n1. How many team members are there and what are their roles?\n2. Are the teams sufficiently skilled/trained in Databricks?\n3. Are they using Professional Services or System Integrators?\n4. Are resources shared with other projects?\n5. Have resources done this type of migration work before?",
-      "type": "initialization",
-      "questions": "1. How many team members are there and what are their roles?\n2. Are the teams sufficiently skilled/trained in Databricks?\n3. Are they using Professional Services or System Integrators?\n4. Are resources shared with other projects?\n5. Have resources done this type of migration work before?",
-      "category": "Resource & Team"
+      "id": "output_789",
+      "type": "output_text",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "Hello! I'm here to help you create a comprehensive use case plan for your customer's migration from Oracle to Databricks.\n\nTo help me create the best plan, could you tell me more about:\n\n1. How many team members are there and what are their roles?\n2. Are the teams sufficiently skilled/trained in Databricks?\n3. Are they using Professional Services or System Integrators?\n\n*Category: Resource & Team*"
+        }
+      ]
     }
   ]
 }
@@ -241,7 +254,8 @@ bundles/
 ├── ai-agent/
 │   ├── databricks.yml          # Bundle configuration
 │   └── notebooks/
-│       └── migration_planning_agent.py
+│       ├── mvp_migration_planning_agent.py
+│       └── simplified_migration_planning_agent.py
 └── data-pipeline/
     ├── databricks.yml
     └── notebooks/
@@ -252,38 +266,39 @@ bundles/
 ### 2. Model Deployment
 - **Training**: Notebook trains and registers model in MLflow
 - **Serving**: Model deployed to Databricks Model Serving
-- **UI Integration**: FastAPI backend queries serving endpoint
+- **UI Integration**: Express.js backend queries serving endpoint
 - **Chat Interface**: React frontend provides conversational UI
 
 ### 3. Dependencies
 - **DSPy**: Core AI framework
-- **Databricks DBRX**: Language model
-- **Vector Search**: Document retrieval
-- **MLflow**: Model management
-- **FastAPI**: Backend API
+- **Databricks Claude Sonnet 4**: Language model
+- **MLflow**: Model management and conversation tracking
+- **Express.js**: Backend API
 - **React**: Frontend UI
 
 ## Configuration
 
 ### Environment Variables
-- `SERVING_ENDPOINT_NAME`: Name of the model serving endpoint
-- `VECTOR_SEARCH_ENDPOINT`: Vector search endpoint name
-- `VECTOR_INDEX_NAME`: Vector index name
-- `MLFLOW_EXPERIMENT_NAME`: MLflow experiment name
+- `DATABRICKS_TOKEN`: Databricks access token for API authentication
+- `PORT`: Server port (default: 5000)
+- `NODE_ENV`: Environment (development/production)
 
 ### Databricks Bundle Variables
 ```yaml
 variables:
   catalog_name: "vbdemos"
   schema_name: "usecase_agent"
-  vector_search_endpoint: "usecase-agent"
-  vector_index_name: "vbdemos.usecase_agent.migration_planning_documents"
-  migration_documents_table: "vbdemos.usecase_agent.migration_documents"
-  agent_model: "databricks-dbrx-instruct"
+  agent_model: "databricks/databricks-claude-sonnet-4"
   temperature: "0.1"
   max_tokens: "2048"
   mlflow_experiment_name: "/Users/varun.bhandary@databricks.com/usecase-agent"
 ```
+
+### Model Configuration
+- **Language Model**: `databricks/databricks-claude-sonnet-4`
+- **Temperature**: 0.1 (for consistent responses)
+- **Max Tokens**: 2048
+- **DSPy Strategy**: Selective Chain of Thought (simple tasks use `dspy.Predict`, complex tasks use `dspy.ChainOfThought`)
 
 ## Usage
 
@@ -292,46 +307,74 @@ variables:
 # Deploy the bundle
 databricks bundle deploy
 
-# Run the training job
-databricks bundle run migration_planning_agent_job
+# Run the simplified agent training
+databricks bundle run simplified_migration_planning_agent_job
 ```
 
 ### 2. Testing the Model
 ```bash
 # Test via Databricks UI
-# Go to Serving → Your Endpoint → Test
-# Input: {"inputs": "I need to migrate Oracle to Databricks"}
+# Go to Serving → simplified-migration-planning-agent → Test
+# Input: {"input": [{"role": "user", "content": "I'm working with a customer who wants to migrate from Oracle to Databricks"}], "context": {"conversation_id": "test_123", "user_id": "test_user"}}
 ```
 
 ### 3. Chat UI
 ```bash
-# Start the UI
-cd ui
+# Set up environment variables
+export DATABRICKS_TOKEN=your_token_here
+
+# Start the backend
+cd ui-backend
+npm install
+npm start
+
+# Start the frontend (in another terminal)
+cd ui-frontend
 npm install
 npm start
 
 # Access at http://localhost:3000
 ```
 
+### 4. Using the Simplified Server
+```bash
+# Use the simplified server for better MLflow integration
+cd ui-backend
+node simplified_server.js
+```
+
 ## Key Benefits
 
-1. **Conversational**: Natural language interaction
-2. **Intelligent**: Context-aware responses
-3. **Progressive**: Builds understanding step by step
-4. **Comprehensive**: Covers all migration planning aspects
-5. **Scalable**: Built on Databricks platform
-6. **Maintainable**: Clean DSPy architecture
-7. **Extensible**: Easy to add new capabilities
+1. **Simplified Architecture**: ~70% less code, easier to maintain and debug
+2. **MLflow Integration**: Built-in conversation management and context tracking
+3. **Better Performance**: Selective Chain of Thought strategy for optimal speed
+4. **Conversational**: Natural language interaction for account teams
+5. **Intelligent**: Context-aware responses with customer focus
+6. **Progressive**: Builds understanding step by step through structured questions
+7. **Comprehensive**: Covers all use case planning aspects
+8. **Scalable**: Built on Databricks platform with Unity Catalog
+9. **Extensible**: Easy to add new capabilities and question categories
+
+## Key Simplifications Made
+
+1. **Removed Custom Session Management**: Uses MLflow's built-in context management
+2. **Simplified Request Handling**: Uses standard ResponsesAgentRequest structure
+3. **Cleaner Architecture**: Single ConversationManager class with in-memory storage
+4. **Better MLflow Integration**: Leverages MLflow's conversation tracking
+5. **Enhanced DSPy Signatures**: Improved with detailed examples and better descriptions
+6. **Fixed DSPy Configuration**: Proper configuration for model serving compatibility
+7. **Reduced Complexity**: Easier to maintain and debug
 
 ## Future Enhancements
 
 1. **Multi-language Support**: Support for different languages
 2. **Custom Categories**: User-defined planning categories
-3. **Template Library**: Pre-built migration templates
-4. **Integration**: Connect with project management tools
+3. **Template Library**: Pre-built use case templates
+4. **Integration**: Connect with CRM and project management tools
 5. **Analytics**: Track planning progress and outcomes
 6. **Collaboration**: Multi-user planning sessions
+7. **Vector Search**: Add document retrieval for enhanced knowledge base
 
 ---
 
-This architecture provides a robust, scalable, and maintainable solution for AI-powered migration planning with conversational capabilities.
+This simplified architecture provides a robust, scalable, and maintainable solution for AI-powered use case planning with conversational capabilities specifically designed for Databricks account teams.
