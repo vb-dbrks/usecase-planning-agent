@@ -1,8 +1,8 @@
-# Use Case Delivery Agent - Simplified DSPy Architecture
+# Use Case Delivery Agent
 
 ## Overview
 
-This project implements a AI agent for Databricks account teams to create use case plans for customer migrations and greenfield scenarios. The agent uses DSPy (Declarative Self-improving Python) framework with MLflow's built-in conversation management, providing conversational AI capabilities through a chat interface to intelligently guide account teams through use case planning.
+This project implements an AI agent for Databricks account teams to create use case plans for customer migrations and greenfield scenarios. The agent uses DSPy (Declarative Self-improving Python) framework with MLflow's built-in conversation management, providing conversational AI capabilities through a chat interface to intelligently guide account teams through use case planning.
 
 ## High-Level Architecture Overview
 
