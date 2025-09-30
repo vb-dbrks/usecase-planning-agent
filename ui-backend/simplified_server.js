@@ -1,47 +1,45 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-const http = require('http');
-const socketIo = require('socket.io');
-const fetch = require('node-fetch');
 
 const app = express();
-const server = http.createServer(app);
-const io = socketIo(server, {
-  cors: {
-    origin: "http://localhost:3000",
-    methods: ["GET", "POST"]
-  }
-});
-
 const PORT = process.env.PORT || 5000;
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 
-// Mock data
+// Serve static files from the React app build directory
+app.use(express.static(path.join(__dirname, '../ui-frontend/build')));
+
+// Mock data (same as before)
 const accounts = [
   {
     id: '1',
-    name: 'UBS',
-    industry: 'Investment Banking',
-    description: 'Swiss multinational investment bank and financial services company',
-    color: '#1E3A8A',
+    name: 'Acme Corporation',
+    industry: 'Technology',
+    region: 'North America',
+    status: 'active',
+    lastContact: '2024-01-15T10:30:00Z',
+    useCaseCount: 2,
   },
   {
     id: '2',
-    name: 'Leeds Building Society',
-    industry: 'Banking',
-    description: 'UK-based building society providing financial services',
-    color: '#10B981',
+    name: 'Global Manufacturing Ltd',
+    industry: 'Manufacturing',
+    region: 'Europe',
+    status: 'active',
+    lastContact: '2024-01-12T09:15:00Z',
+    useCaseCount: 1,
   },
   {
     id: '3',
-    name: 'Astellas',
-    industry: 'Pharmaceutical',
-    description: 'Japanese multinational pharmaceutical company',
-    color: '#F59E0B',
+    name: 'HealthTech Solutions',
+    industry: 'Healthcare',
+    region: 'Asia Pacific',
+    status: 'prospect',
+    lastContact: '2024-01-08T16:45:00Z',
+    useCaseCount: 1,
   },
 ];
 
@@ -133,7 +131,7 @@ app.post('/api/usecases', (req, res) => {
   res.status(201).json(newUseCase);
 });
 
-// Chat endpoint to call Databricks agent
+// Simplified chat endpoint using MLflow's built-in context management
 app.post('/api/chat', async (req, res) => {
   try {
     const {
@@ -142,19 +140,11 @@ app.post('/api/chat', async (req, res) => {
       conversation_id,
       userId,
       user_id,
-      endpointKey,
-      endpoint_key,
     } = req.body;
-
-    const selectedEndpointKey = endpoint_key || endpointKey || 'simplified';
-    const incomingConversationId = conversation_id || conversationId;
-    const incomingUserId = user_id || userId;
-
     console.log('🤖 Received chat request:', { 
       message: message?.substring(0, 100) + '...',
       conversation_id: incomingConversationId || 'none',
-      user_id: incomingUserId || 'none',
-      endpoint_key: selectedEndpointKey
+      user_id: incomingUserId || 'none'
     });
     
     // Get Databricks token from environment variable
@@ -168,9 +158,14 @@ app.post('/api/chat', async (req, res) => {
     
     console.log('✅ DATABRICKS_TOKEN is set, calling agent...');
 
-    // Prepare the request for the Databricks agent (correct format)
+    const incomingConversationId = conversation_id || conversationId;
+    const incomingUserId = user_id || userId;
+
+    // Generate conversation ID if not provided
     const currentConversationId = incomingConversationId || `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const currentUserId = incomingUserId || currentConversationId;
+    
+    // Create request using MLflow's standard format
     const agentRequest = {
       input: [
         {
@@ -179,24 +174,20 @@ app.post('/api/chat', async (req, res) => {
         }
       ],
       context: {
-        user_id: currentUserId,
-        conversation_id: currentConversationId
+        conversation_id: currentConversationId,
+        user_id: currentUserId
       },
       metadata: {
-        user_id: currentUserId,
-        conversation_id: currentConversationId
+        conversation_id: currentConversationId,
+        user_id: currentUserId
       }
     };
 
-    // Call the Databricks agent endpoint
     console.log('🤖 Calling Databricks agent endpoint...');
     console.log('🤖 Request context:', agentRequest.context);
-    const endpointUrl = selectedEndpointKey === 'mvp'
-      ? 'https://adb-984752964297111.11.azuredatabricks.net/serving-endpoints/migration-planning-agent/invocations'
-      : 'https://adb-984752964297111.11.azuredatabricks.net/serving-endpoints/simplified-migration-planning-agent/invocations';
-
+    
     const agentResponse = await fetch(
-      endpointUrl,
+      'https://adb-984752964297111.11.azuredatabricks.net/serving-endpoints/simplified-migration-planning-agent/invocations',
       {
         method: 'POST',
         headers: {
@@ -207,7 +198,6 @@ app.post('/api/chat', async (req, res) => {
       }
     );
 
-    console.log('🤖 Agent response status:', agentResponse.status);
     if (!agentResponse.ok) {
       const errorText = await agentResponse.text();
       console.error('❌ Agent request failed:', errorText);
@@ -215,22 +205,14 @@ app.post('/api/chat', async (req, res) => {
     }
 
     const agentData = await agentResponse.json();
-    console.log('🤖 Agent response received, parsing...');
-    
-    // Extract the response text from the agent's output (correct format)
     let responseText = "I'm here to help with your migration planning. Could you tell me more about your project?";
-    let rawSections = [];
     
     if (agentData && agentData.output && agentData.output.length > 0) {
       const firstOutput = agentData.output[0];
       if (firstOutput.content && firstOutput.content.length > 0) {
-        // Extract text from content array
         const textContent = firstOutput.content.find(item => item.type === 'output_text');
         if (textContent && textContent.text) {
           responseText = textContent.text;
-          rawSections = firstOutput.content
-            .filter(item => item.type === 'output_text' && item.text)
-            .map(item => item.text);
         }
       }
     } else {
@@ -239,11 +221,9 @@ app.post('/api/chat', async (req, res) => {
 
     res.json({ 
       response: responseText,
-      sections: rawSections,
       timestamp: new Date().toISOString(),
       conversation_id: currentConversationId,
-      user_id: currentUserId,
-      endpoint_key: selectedEndpointKey
+      user_id: currentUserId
     });
 
   } catch (error) {
@@ -255,39 +235,16 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
-// Socket.io for real-time chat
-io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
-
-  socket.on('join-chat', (data) => {
-    socket.join(data.chatId);
-    console.log(`User ${socket.id} joined chat ${data.chatId}`);
-  });
-
-  socket.on('send-message', (data) => {
-    // Broadcast message to all users in the chat room
-    socket.to(data.chatId).emit('receive-message', {
-      id: Date.now().toString(),
-      text: data.message,
-      sender: 'agent',
-      timestamp: new Date().toISOString(),
-    });
-  });
-
-  socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
-  });
+// Catch all handler: send back React's index.html file for any non-API routes
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../ui-frontend/build', 'index.html'));
 });
 
-// Serve static files from React build
-if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.join(__dirname, '../ui-frontend/build')));
-  
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, '../ui-frontend/build/index.html'));
-  });
-}
-
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📱 Frontend available at http://localhost:${PORT}`);
+  console.log(`🔗 API available at http://localhost:${PORT}/api`);
+  console.log(`💬 Chat endpoint: http://localhost:${PORT}/api/chat`);
 });
+
+module.exports = app;

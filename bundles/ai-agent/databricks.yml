@@ -67,35 +67,3 @@ targets:
       max_tokens: "4096"
       mlflow_experiment_name: "/Users/varun.bhandary@databricks.com/usecase-agent"
 
-resources:
-  jobs:
-    migration_planning_agent_job:
-      name: "migration-planning-agent-job"
-      tasks:
-        - task_key: "run_agent"
-          notebook_task:
-            notebook_path: "notebooks/migration_planning_agent_v2.py"
-            base_parameters:
-              vector_search_endpoint: ${var.vector_search_endpoint}
-              vector_index_name: ${var.vector_index_name}
-              migration_documents_table: ${var.migration_documents_table}
-              agent_model: ${var.agent_model}
-              temperature: ${var.temperature}
-              max_tokens: ${var.max_tokens}
-              mlflow_experiment_name: ${var.mlflow_experiment_name}
-
-    agent_evaluation_job:
-      name: "agent-evaluation-job"
-      tasks:
-        - task_key: "evaluate_agent"
-          notebook_task:
-            notebook_path: "notebooks/agent_evaluation.py"
-            base_parameters:
-              vector_search_endpoint: ${var.vector_search_endpoint}
-              vector_index_name: ${var.vector_index_name}
-              migration_documents_table: ${var.migration_documents_table}
-              agent_model: ${var.agent_model}
-              temperature: ${var.temperature}
-              max_tokens: ${var.max_tokens}
-              mlflow_experiment_name: ${var.mlflow_experiment_name}
-

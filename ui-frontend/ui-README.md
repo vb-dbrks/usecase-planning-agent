@@ -92,7 +92,7 @@ A professional, modern web application built with React and Node.js for managing
 
 The chat interface is now connected to your deployed Databricks migration planning agent! 
 
-- **Agent Endpoint**: `https://adb-984752964297111.11.azuredatabricks.net/serving-endpoints/migration-planning-agent/invocations`
+- **Agent Endpoint**: `https://adb-984752964297111.11.azuredatabricks.net/serving-endpoints/simplified-migration-planning-agent/invocations`
 - **Features**: Real-time conversation with the planning agent, intelligent question generation, and comprehensive migration planning
 - **Fallback**: If the agent is unavailable, the chat will show helpful fallback responses
 

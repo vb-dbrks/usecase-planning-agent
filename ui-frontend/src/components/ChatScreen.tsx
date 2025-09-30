@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   Box,
   Typography,
@@ -9,6 +9,8 @@ import {
   Paper,
   Avatar,
   CircularProgress,
+  ToggleButtonGroup,
+  ToggleButton,
 } from '@mui/material';
 import {
   ArrowBack,
@@ -32,6 +34,13 @@ const ChatScreen: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const defaultUserId = useMemo(
+    () => `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    []
+  );
+  const [userId, setUserId] = useState<string>(defaultUserId);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [endpointKey, setEndpointKey] = useState<'simplified' | 'mvp'>('simplified');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -43,12 +52,16 @@ const ChatScreen: React.FC = () => {
   }, [messages]);
 
   useEffect(() => {
-    // Initialize with welcome message
+    const endpointLabel = endpointKey === 'simplified'
+      ? 'Simplified Migration Planning Agent'
+      : 'MVP Migration Planning Agent';
+    const timestamp = new Date().toISOString();
+
     if (isNewChat) {
       setMessages([
         {
           id: '1',
-          text: `Hello! I'm your **Databricks Migration Planning Agent**. I'll help you create comprehensive use case plans for customer migrations and greenfield scenarios.
+          text: `Hello! I'm your **Databricks Migration Planning Agent** (${endpointLabel}). I'll help you create comprehensive use case plans for customer migrations and greenfield scenarios.
 
 **What I can help you with:**
 • **Migration Planning**: Developing detailed plans for customers moving from legacy data platforms (like Oracle, Snowflake, Teradata, etc.) to Databricks
@@ -65,7 +78,7 @@ const ChatScreen: React.FC = () => {
 
 Let's start by understanding your ${account?.name} project requirements. What customer scenario would you like to work on today?`,
           sender: 'agent',
-          timestamp: new Date().toISOString(),
+          timestamp,
           type: 'system',
         },
       ]);
@@ -73,14 +86,17 @@ Let's start by understanding your ${account?.name} project requirements. What cu
       setMessages([
         {
           id: '1',
-          text: `Welcome back to your ${useCase?.title} conversation. I'm here to help you continue planning your migration project.`,
+          text: `Welcome back to your ${useCase?.title} conversation. I'm here to help you continue planning your migration project using the **${endpointLabel}**.`,
           sender: 'agent',
-          timestamp: new Date().toISOString(),
+          timestamp,
           type: 'system',
         },
       ]);
     }
-  }, [isNewChat, account, useCase]);
+
+    // Reset conversation when switching endpoints to avoid cross-agent state
+    setConversationId(null);
+  }, [isNewChat, account, useCase, endpointKey]);
 
   const handleSendMessage = async () => {
     if (!inputValue.trim() || isLoading) return;
@@ -98,14 +114,33 @@ Let's start by understanding your ${account?.name} project requirements. What cu
 
     // Call the real Databricks agent
     try {
-      const agentResponseText = await generateAgentResponse(inputValue);
-      const agentResponse: Message = {
-        id: (Date.now() + 1).toString(),
-        text: agentResponseText,
-        sender: 'agent',
-        timestamp: new Date().toISOString(),
+      const agentResult = await generateAgentResponse(inputValue);
+
+      const appendMessages = (chunks: string[]) => {
+        const newMessages: Message[] = chunks.map((chunk, index) => ({
+          id: `${Date.now()}-${index}`,
+          text: chunk.trim(),
+          sender: 'agent',
+          timestamp: new Date().toISOString(),
+        }));
+        setMessages(prev => [...prev, ...newMessages]);
       };
-      setMessages(prev => [...prev, agentResponse]);
+
+      if (agentResult.sections && agentResult.sections.length > 0) {
+        const chunks = agentResult.sections.flatMap(chunkMarkdown);
+        appendMessages(chunks.length ? chunks : agentResult.sections);
+      } else if (agentResult.response.includes('#')) {
+        appendMessages(chunkMarkdown(agentResult.response));
+      } else {
+        appendMessages([agentResult.response]);
+      }
+      // Ensure state mirrors latest IDs from backend
+      if (agentResult.user_id && agentResult.user_id !== userId) {
+        setUserId(agentResult.user_id);
+      }
+      if (agentResult.conversation_id && agentResult.conversation_id !== conversationId) {
+        setConversationId(agentResult.conversation_id);
+      }
     } catch (error) {
       console.error('Error calling Databricks agent:', error);
       const errorResponse: Message = {
@@ -120,8 +155,12 @@ Let's start by understanding your ${account?.name} project requirements. What cu
     }
   };
 
-  const generateAgentResponse = async (userInput: string): Promise<string> => {
+  const generateAgentResponse = async (
+    userInput: string
+  ): Promise<{ response: string; conversation_id: string; user_id: string; sections?: string[]; endpoint_key?: string }> => {
     console.log('🤖 Calling Databricks agent with message:', userInput);
+    console.log('🤖 Using conversation ID:', conversationId);
+    console.log('🤖 Using user ID:', userId);
     
     // Call the deployed Databricks agent with timeout
     const controller = new AbortController();
@@ -135,6 +174,9 @@ Let's start by understanding your ${account?.name} project requirements. What cu
         },
         body: JSON.stringify({
           message: userInput,
+          conversation_id: conversationId,
+          user_id: userId,
+          endpoint_key: endpointKey,
         }),
         signal: controller.signal,
       });
@@ -146,8 +188,28 @@ Let's start by understanding your ${account?.name} project requirements. What cu
       }
 
       const data = await response.json();
+      if (data.endpoint_key && data.endpoint_key !== endpointKey) {
+        setEndpointKey(data.endpoint_key === 'mvp' ? 'mvp' : 'simplified');
+      }
       console.log('🤖 Agent response received:', data);
-      return data.response || "I'm here to help with your migration planning. Could you tell me more about your project?";
+      
+      // Update conversation ID if provided
+      if (data.conversation_id && data.conversation_id !== conversationId) {
+        setConversationId(data.conversation_id);
+        console.log('🤖 Updated conversation ID:', data.conversation_id);
+      }
+      if (data.user_id && data.user_id !== userId) {
+        setUserId(data.user_id);
+        console.log('🤖 Updated user ID:', data.user_id);
+      }
+      
+      return {
+        response: data.response || "I'm here to help with your migration planning. Could you tell me more about your project?",
+        conversation_id: data.conversation_id || conversationId || 'unknown',
+        user_id: data.user_id || userId,
+        sections: data.sections,
+        endpoint_key: data.endpoint_key || endpointKey
+      };
     } catch (error) {
       clearTimeout(timeoutId);
       console.error('🤖 Error calling agent:', error);
@@ -174,6 +236,18 @@ Let's start by understanding your ${account?.name} project requirements. What cu
     return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
+  const parsePlanResponse = (text: string) => {
+    if (!text) return [];
+    const parts = text.split(/(?=#\s)/).filter(Boolean);
+    return parts;
+  };
+
+  const chunkMarkdown = (text: string) => {
+    if (!text) return [];
+    const sections = text.split(/(?=^#\s)/gm).filter(Boolean);
+    return sections.length ? sections : [text];
+  };
+
   return (
     <Box sx={{ flexGrow: 1, backgroundColor: '#F8FAFC', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
       <AppBar position="static" elevation={0} sx={{ backgroundColor: 'white', borderBottom: '1px solid #E2E8F0' }}>
@@ -181,9 +255,18 @@ Let's start by understanding your ${account?.name} project requirements. What cu
           <IconButton edge="start" color="inherit" onClick={handleBackClick} sx={{ mr: 2, color: '#64748B' }}>
             <ArrowBack />
           </IconButton>
-          <IconButton edge="start" color="inherit" sx={{ mr: 2, color: '#64748B' }}>
-            <Menu />
-          </IconButton>
+            <ToggleButtonGroup
+              value={endpointKey}
+              exclusive
+              onChange={(_, value) => {
+                if (!value || value === endpointKey) return;
+                setEndpointKey(value);
+              }}
+              sx={{ mr: 2, '& .MuiToggleButton-root': { textTransform: 'none', px: 2 } }}
+            >
+              <ToggleButton value="simplified">Simplified Agent</ToggleButton>
+              <ToggleButton value="mvp">MVP Agent</ToggleButton>
+            </ToggleButtonGroup>
           <Typography variant="h6" component="div" sx={{ flexGrow: 1, color: '#1E293B', fontWeight: 600 }}>
             {isNewChat ? `${account?.name} - New Use Case Chat` : `${account?.name} - ${useCase?.title}`}
           </Typography>

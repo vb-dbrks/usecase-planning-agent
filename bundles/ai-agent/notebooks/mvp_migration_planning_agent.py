@@ -27,7 +27,7 @@ import mlflow
 import mlflow.dspy
 from databricks.vector_search.client import VectorSearchClient
 import json
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 import pydantic
 
 # Check versions for debugging
@@ -109,19 +109,21 @@ print("DSPy and Vector Search configured successfully!")
 class SimpleStorage:
     """Optimized in-memory storage for MVP demo - stores only user inputs with user isolation."""
     
-    def __init__(self, user_id=None):
+    def __init__(self, user_id=None, conversation_id=None):
         self.user_id = user_id or "default_user"
+        self.conversation_id = conversation_id
         self.user_inputs = []  # Store only user inputs (not agent responses)
         self.information_summary = ""
         self.current_questions = []
         self.questions_asked = set()
-        print(f"🔐 [STORAGE] Created storage for user: {self.user_id}")
+        print(f"🔐 [STORAGE] Created storage for user: {self.user_id}, conversation: {self.conversation_id}")
     
     def add_user_input(self, user_input):
         """Store only user input, not agent response - reduces context length by 80-90%."""
         self.user_inputs.append({
             "input": user_input,
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "conversation_id": self.conversation_id
         })
     
     def update_summary(self, new_info):
@@ -204,7 +206,7 @@ QUESTION_CATEGORIES = {
 
 # Simplified DSPy Signatures for MVP
 class IntentClassifierSignature(dspy.Signature):
-    """Classify user intent based ONLY on the current user input, ignoring conversation history.
+    """Classify user intent based on current input and conversation context.
     
     Examples:
     - "Hi, what can you help with?" -> greeting
@@ -215,7 +217,9 @@ class IntentClassifierSignature(dspy.Signature):
     - "Ask me questions then" -> providing_context
     """
     user_input: str = dspy.InputField(desc="The user's current input message")
-    intent: str = dspy.OutputField(desc="Intent based on current input only: greeting, answering_questions, providing_context, feedback_request, plan_generation, or other")
+    user_id: str = dspy.InputField(desc="User ID for session context")
+    conversation_id: str = dspy.InputField(desc="Conversation ID for session tracking")
+    intent: str = dspy.OutputField(desc="Intent: greeting, answering_questions, providing_context, feedback_request, plan_generation, or other")
     confidence: float = dspy.OutputField(desc="Confidence score between 0 and 1")
 
 class GreetingSignature(dspy.Signature):
@@ -236,12 +240,16 @@ class InformationCollectorSignature(dspy.Signature):
     - Integration requirements
     """
     user_input: str = dspy.InputField(desc="The user's input from Databricks account team about customer use case")
+    user_id: str = dspy.InputField(desc="User ID for session context")
+    conversation_id: str = dspy.InputField(desc="Conversation ID for session tracking")
     conversation_context: str = dspy.InputField(desc="Recent conversation context about customer migration or greenfield scenario")
     extracted_info: str = dspy.OutputField(desc="Structured summary of key customer information extracted from the input")
 
 class QuestionGeneratorSignature(dspy.Signature):
     """Generate exactly 3 relevant questions for Databricks account teams to gather customer use case information."""
     current_info: str = dspy.InputField(desc="Current customer use case information summary")
+    user_id: str = dspy.InputField(desc="User ID for session context")
+    conversation_id: str = dspy.InputField(desc="Conversation ID for session tracking")
     conversation_context: str = dspy.InputField(desc="Recent conversation context about customer migration or greenfield scenario")
     question_categories: str = dspy.InputField(desc="Available question categories and example questions to guide question generation")
     questions: str = dspy.OutputField(desc="Exactly 3 questions, each on a new line, starting with numbers 1., 2., 3. Format: '1. Question one?\n2. Question two?\n3. Question three?'")
@@ -287,34 +295,48 @@ class SessionManager:
     def __init__(self, vector_search_endpoint, vector_index):
         self.vector_search_endpoint = vector_search_endpoint
         self.vector_index = vector_index
-        self.sessions = {}  # user_id -> ConversationManager
+        self.sessions = {}  # (user_id, conversation_id) -> ConversationManager
         print("🔐 [SESSION_MANAGER] Session manager initialized")
     
-    def get_agent_for_user(self, user_id):
-        """Get or create a ConversationManager for the specified user."""
-        if user_id not in self.sessions:
-            print(f"🔐 [SESSION_MANAGER] Creating new session for user: {user_id}")
-            self.sessions[user_id] = ConversationManager(
+    def get_agent_for_user(self, user_id, conversation_id):
+        """Get or create a ConversationManager for the specified user and conversation."""
+        session_key = (user_id, conversation_id)
+        print(f"🔐 [SESSION_MANAGER] Getting agent for session: {session_key}")
+        print(f"🔐 [SESSION_MANAGER] Current sessions: {list(self.sessions.keys())}")
+        if session_key not in self.sessions:
+            print(f"🔐 [SESSION_MANAGER] Creating new session for: {session_key}")
+            self.sessions[session_key] = ConversationManager(
                 vector_search_endpoint=self.vector_search_endpoint,
                 vector_index=self.vector_index,
-                user_id=user_id
+                user_id=user_id,
+                conversation_id=conversation_id
             )
         else:
-            print(f"🔐 [SESSION_MANAGER] Using existing session for user: {user_id}")
-        return self.sessions[user_id]
+            print(f"🔐 [SESSION_MANAGER] Using existing session for: {session_key}")
+        agent = self.sessions[session_key]
+        print(f"🔐 [SESSION_MANAGER] Returning agent object ID: {id(agent)}")
+        print(f"🔐 [SESSION_MANAGER] Agent storage object ID: {id(agent.storage)}")
+        return agent
     
     def get_active_sessions(self):
         """Get list of active user sessions."""
         return list(self.sessions.keys())
     
-    def clear_session(self, user_id):
-        """Clear a specific user session."""
-        if user_id in self.sessions:
-            del self.sessions[user_id]
-            print(f"🔐 [SESSION_MANAGER] Cleared session for user: {user_id}")
+    def clear_session(self, user_id, conversation_id=None):
+        """Clear a specific session. If conversation_id None, clear all user sessions."""
+        if conversation_id is None:
+            keys_to_delete = [key for key in self.sessions.keys() if key[0] == user_id]
+            for key in keys_to_delete:
+                del self.sessions[key]
+            print(f"🔐 [SESSION_MANAGER] Cleared all sessions for user: {user_id}")
+        else:
+            session_key = (user_id, conversation_id)
+            if session_key in self.sessions:
+                del self.sessions[session_key]
+                print(f"🔐 [SESSION_MANAGER] Cleared session for: {session_key}")
     
     def clear_all_sessions(self):
-        """Clear all user sessions."""
+        """Clear all sessions."""
         self.sessions.clear()
         print("🔐 [SESSION_MANAGER] Cleared all sessions")
 
@@ -328,15 +350,16 @@ class SessionManager:
 class ConversationManager(dspy.Module):
     """Simplified conversation manager for MVP demo with per-user session support."""
     
-    def __init__(self, vector_search_endpoint, vector_index, user_id=None):
+    def __init__(self, vector_search_endpoint, vector_index, user_id=None, conversation_id=None):
         super().__init__()
         self.user_id = user_id or "default_user"
+        self.conversation_id = conversation_id or "default_conversation"
         self.vector_search_endpoint = vector_search_endpoint
         self.vector_index = vector_index
         
         # Create per-user storage
-        self.storage = SimpleStorage(user_id=self.user_id)
-        print(f"🔐 [SESSION] Created new session for user: {self.user_id}")
+        self.storage = SimpleStorage(user_id=self.user_id, conversation_id=self.conversation_id)
+        print(f"🔐 [SESSION] Created new session for user: {self.user_id}, conversation: {self.conversation_id}")
         
         # Initialize DSPy components with selective Chain of Thought
         # Simple agents: Use dspy.Predict() for faster, direct responses
@@ -385,7 +408,9 @@ class ConversationManager(dspy.Module):
         print(f"🎯 [INTENT] user_input length: {len(safe_user_input)}")
         
         intent_result = self.intent_classifier(
-            user_input=safe_user_input
+            user_input=safe_user_input,
+            user_id=self.user_id,
+            conversation_id=self.conversation_id
         )
         
         intent = intent_result.intent.lower().strip()
@@ -458,6 +483,8 @@ class ConversationManager(dspy.Module):
         
         extract_result = self.info_collector(
             user_input=safe_user_input,
+            user_id=self.user_id,
+            conversation_id=self.conversation_id,
             conversation_context=safe_context
         )
         print(f"📝 [INFO_COLLECTION] Info collector completed")
@@ -469,6 +496,10 @@ class ConversationManager(dspy.Module):
         print(f"📝 [INFO_COLLECTION] extract_result.extracted_info length: {len(extract_result.extracted_info)}")
         
         # Update summary with new information
+        print(f"📝 [INFO_COLLECTION] Storage object ID: {id(self.storage)}")
+        print(f"📝 [INFO_COLLECTION] Storage user_id: {self.storage.user_id}")
+        print(f"📝 [INFO_COLLECTION] Storage user_inputs count: {len(self.storage.user_inputs)}")
+        
         if extract_result.extracted_info and extract_result.extracted_info.strip():
             self.storage.update_summary(extract_result.extracted_info)
             print(f"📝 [INFO_COLLECTION] Updated summary with new info")
@@ -477,6 +508,9 @@ class ConversationManager(dspy.Module):
             # Fallback: use the raw user input if extraction fails
             self.storage.update_summary(user_input)
             print(f"📝 [INFO_COLLECTION] Updated summary with raw user input as fallback")
+        
+        print(f"📝 [INFO_COLLECTION] After update - Storage user_inputs count: {len(self.storage.user_inputs)}")
+        print(f"📝 [INFO_COLLECTION] After update - Storage summary length: {len(self.storage.get_summary())}")
         
         # Generate next 3 questions
         current_info = self.storage.get_summary()
@@ -493,6 +527,8 @@ class ConversationManager(dspy.Module):
         
         question_result = self.question_generator(
             current_info=safe_current_info,
+            user_id=self.user_id,
+            conversation_id=self.conversation_id,
             conversation_context=safe_context,
             question_categories=safe_question_categories
         )
@@ -555,6 +591,10 @@ class ConversationManager(dspy.Module):
     def _handle_feedback_request(self, user_input):
         """Handle feedback on information collection progress."""
         print(f"📊 [FEEDBACK] Starting feedback request...")
+        print(f"📊 [FEEDBACK] Storage object ID: {id(self.storage)}")
+        print(f"📊 [FEEDBACK] Storage user_id: {self.storage.user_id}")
+        print(f"📊 [FEEDBACK] Storage user_inputs count: {len(self.storage.user_inputs)}")
+        
         current_info = self.storage.get_summary()
         context = self._get_conversation_context()
         
@@ -566,17 +606,38 @@ class ConversationManager(dspy.Module):
         print(f"📊 [FEEDBACK] context length: {len(context)}")
         
         print(f"📊 [FEEDBACK] Calling gap_analyzer...")
+        safe_current_info = self._safe_str(current_info)
+        print(f"📊 [FEEDBACK] Safe current_info length: {len(safe_current_info)}")
+        print(f"📊 [FEEDBACK] Safe current_info content: {safe_current_info[:200]}...")
+        
         gap_result = self.gap_analyzer(
-            information_summary=self._safe_str(current_info),
+            information_summary=safe_current_info,
             feedback="Analyze completeness and identify gaps"
         )
         print(f"📊 [FEEDBACK] Gap analyzer completed")
+        print(f"📊 [FEEDBACK] Gap result feedback: {gap_result.feedback[:100]}...")
+        print(f"📊 [FEEDBACK] Gap result missing_areas: {gap_result.missing_areas[:100]}...")
         
         response = f"Based on what you've shared so far:\n\n"
         response += f"**Information Collected:**\n{current_info[:200]}...\n\n"
         response += f"**Analysis:** {gap_result.feedback}\n\n"
         response += f"**Missing Areas:** {gap_result.missing_areas}\n\n"
         response += f"Continue sharing information or type '/plan' when ready to generate your migration plan."
+        
+        # Add detailed debug information for /status command
+        debug_status = f"""
+        
+[STATUS DEBUG INFO]
+Storage Summary Full: {current_info}
+Storage Summary Length: {len(current_info)}
+Conversation Context: {context}
+Context Length: {len(context)}
+User Inputs Count: {len(self.storage.user_inputs)}
+User Inputs: {[item['input'][:50] + '...' for item in self.storage.user_inputs]}
+Storage User ID: {self.storage.user_id}
+"""
+        
+        response += debug_status
         
         # Store only user input, not agent response - reduces context length by 80-90%
         self.storage.add_user_input(user_input)
@@ -764,383 +825,6 @@ test_session_manager = SessionManager(vector_search_endpoint, vector_index_name)
 print("Session Manager created successfully!")
 print("🔐 [NOTE] Global agent removed - each user now gets their own session!")
 
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 8. Test Tabular Plan Generation
-
-# COMMAND ----------
-
-# # Test tabular plan generation with sample customer information
-# sample_customer_info = """
-# Customer: TechCorp
-# Use Case: Migrate from Snowflake to Databricks
-# Data Volume: 50TB
-# Team Size: 5 members
-# Timeline: 6 months
-# Current Platform: Snowflake on AWS
-# Requirements: Real-time analytics, ML workloads, data governance
-# """
-
-# sample_databricks_knowledge = """
-# Databricks migration best practices:
-# - Phase 1: Assessment and planning (2-4 weeks)
-# - Phase 2: Data migration and validation (4-8 weeks)  
-# - Phase 3: Application migration (4-6 weeks)
-# - Phase 4: Testing and optimization (2-4 weeks)
-# - Phase 5: Go-live and support (2-4 weeks)
-# """
-
-# print("=== Testing Tabular Plan Generation ===")
-# print("🧪 [TEST] Starting tabular plan generation test...")
-# try:
-#     # Test the tabular plan generator directly
-#     print(f"🧪 [TEST] Calling tabular_plan_generator...")
-#     test_agent = test_session_manager.get_agent_for_user("test_user_1")
-#     tabular_result = test_agent.tabular_plan_generator(
-#         customer_info=test_agent._safe_str(sample_customer_info),
-#         databricks_knowledge=test_agent._safe_str(sample_databricks_knowledge)
-#     )
-#     print(f"🧪 [TEST] Tabular plan generation completed")
-#     print("Implementation Plan:")
-#     print(tabular_result.implementation_plan)
-#     print("\nTimeline Summary:")
-#     print(tabular_result.timeline_summary)
-#     print("\nResource Requirements:")
-#     print(tabular_result.resource_requirements)
-# except Exception as e:
-#     print(f"🧪 [TEST] Error in tabular plan generation: {e}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 9. Test Question Generation with Categories
-
-# COMMAND ----------
-
-# # Test question generation with categories
-# print("=== Testing Question Generation with Categories ===")
-# print("🧪 [TEST] Starting question generation test...")
-# try:
-#     # Test the question generator with categories
-#     test_agent = test_session_manager.get_agent_for_user("test_user_2")
-#     current_info = "Customer wants to migrate from Snowflake to Databricks"
-#     context = "Initial conversation about migration planning"
-#     question_categories = test_agent._format_question_categories()
-    
-#     print(f"🧪 [TEST] Calling question_generator...")
-#     question_result = test_agent.question_generator(
-#         current_info=test_agent._safe_str(current_info),
-#         conversation_context=test_agent._safe_str(context),
-#         question_categories=test_agent._safe_str(question_categories)
-#     )
-#     print(f"🧪 [TEST] Question generation completed")
-    
-#     print("Generated Questions:")
-#     print(question_result.questions)
-#     print(f"\nCategory: {question_result.category}")
-#     print(f"\nQuestion Categories Used:")
-#     print(question_categories[:200] + "...")
-    
-# except Exception as e:
-#     print(f"🧪 [TEST] Error in question generation: {e}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 10. Test Intent Classification
-
-# COMMAND ----------
-
-# # Test intent classification with various inputs
-# test_inputs = [
-#     "Hi, what can you help with?",  # greeting
-#     "I'm working with a customer who wants to migrate from Snowflake to Databricks",  # providing_context
-#     "How's the information collection going?",  # feedback_request
-#     "/plan",  # plan_generation
-#     "The customer has 5 team members with different roles",  # answering_questions
-#     "What's the status of our customer migration planning?",  # feedback_request
-#     "Generate a use case plan for our customer",  # plan_generation
-#     "Hello, I need help with customer use case planning",  # greeting
-#     "The customer's data warehouse is 50TB in size",  # answering_questions
-#     "The customer is using AWS and has security approval",  # providing_context
-#     "What do you think about our customer's progress?",  # feedback_request
-#     "Create a use case plan for our customer now"  # plan_generation
-# ]
-
-# print("=== Testing Intent Classification ===")
-# for i, test_input in enumerate(test_inputs, 1):
-#     print(f"\n--- Test {i}: {test_input} ---")
-#     print(f"🧪 [TEST] Testing intent classification for: '{test_input}'")
-#     try:
-#         # Test intent classification directly
-#         test_agent = test_session_manager.get_agent_for_user("test_user_3")
-#         context = test_agent._get_conversation_context()
-#         print(f"🧪 [TEST] Calling intent_classifier...")
-#         intent_result = test_agent.intent_classifier(
-#             user_input=test_agent._safe_str(test_input),
-#             conversation_context=test_agent._safe_str(context)
-#         )
-#         print(f"🧪 [TEST] Intent classification completed")
-#         print(f"Intent: {intent_result.intent}")
-#         print(f"Confidence: {intent_result.confidence}")
-#     except Exception as e:
-#         print(f"🧪 [TEST] Error in intent classification: {e}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 11. Context Optimization Testing
-
-# COMMAND ----------
-
-# # Test the context optimization improvements
-# print("=== Testing Context Optimization ===")
-# print("🧪 [OPTIMIZATION] Testing context length improvements...")
-
-# # Test with multiple interactions to see context growth
-# test_inputs = [
-#     "Hi, what can you help with?",
-#     "I want to migrate from Snowflake to Databricks", 
-#     "The customer has 5 team members with different roles",
-#     "How's the information collection going?"
-# ]
-
-# print("\n📊 Context Length Analysis:")
-# test_agent = test_session_manager.get_agent_for_user("test_user_4")
-# for i, test_input in enumerate(test_inputs, 1):
-#     print(f"\n--- Test {i}: {test_input} ---")
-#     response = test_agent.process_user_input(test_input)
-#     context_length = test_agent.storage.get_context_length()
-#     print(f"   Context length: {context_length} characters")
-#     print(f"   Response length: {len(response)} characters")
-
-# print(f"\n✅ Context Optimization Benefits:")
-# print(f"   - Before: ~13,000+ characters (full conversation)")
-# print(f"   - After: ~500-1,000 characters (user inputs only)")
-# print(f"   - Reduction: 80-90% smaller context")
-# print(f"   - Performance: Faster processing, lower token usage")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 12. Performance Testing - Selective Chain of Thought
-
-# COMMAND ----------
-
-# # Test performance improvements with selective Chain of Thought
-# print("=== Testing Performance Improvements ===")
-# print("🧪 [PERFORMANCE] Testing selective Chain of Thought strategy...")
-
-# import time
-
-# # Test simple agents (should be faster with dspy.Predict)
-# print("\n1. Testing Simple Agents (dspy.Predict):")
-# test_agent_1 = test_session_manager.get_agent_for_user("test_user_5")
-# start_time = time.time()
-# test_input = "Hi, what can you help with?"
-# response = test_agent_1.process_user_input(test_input)
-# simple_agent_time = time.time() - start_time
-# print(f"   ✅ Greeting Handler: {simple_agent_time:.2f}s (using dspy.Predict)")
-
-# # Test complex agents (should maintain quality with ChainOfThought)
-# print("\n2. Testing Complex Agents (dspy.ChainOfThought):")
-# test_agent_2 = test_session_manager.get_agent_for_user("test_user_6")
-# start_time = time.time()
-# test_input = "I want to migrate from Snowflake to Databricks"
-# response = test_agent_2.process_user_input(test_input)
-# complex_agent_time = time.time() - start_time
-# print(f"   ✅ Question Generator: {complex_agent_time:.2f}s (using ChainOfThought)")
-
-# print(f"\n📊 Performance Summary:")
-# print(f"   - Simple agents: Fast responses with dspy.Predict()")
-# print(f"   - Complex agents: Thoughtful responses with ChainOfThought()")
-# print(f"   - Expected benefits: 20-30% faster simple interactions")
-# print(f"   - Quality maintained: Complex reasoning preserved")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 13. Test MVP Agent Flows
-
-# COMMAND ----------
-
-# # Test Flow 1: Greeting
-# print("=== Testing Flow 1: Greeting ===")
-# print("🧪 [TEST] Starting greeting flow test...")
-# test_agent_flow1 = test_session_manager.get_agent_for_user("test_user_flow1")
-# test_input_1 = "Hi, what can you help with?"
-# response_1 = test_agent_flow1.process_user_input(test_input_1)
-# print(f"🧪 [TEST] Greeting flow test completed")
-# print(f"User: {test_input_1}")
-# print(f"Agent: {response_1}")
-# print()
-
-# # COMMAND ----------
-
-# # Test Flow 2: Information Collection
-# print("=== Testing Flow 2: Information Collection ===")
-# print("🧪 [TEST] Starting information collection flow test...")
-# test_agent_flow2 = test_session_manager.get_agent_for_user("test_user_flow2")
-# test_input_2 = "I'm working with a customer who wants to migrate from Snowflake to Databricks"
-# response_2 = test_agent_flow2.process_user_input(test_input_2)
-# print(f"🧪 [TEST] Information collection flow test completed")
-# print(f"User: {test_input_2}")
-# print(f"Agent: {response_2}")
-# print()
-
-# # COMMAND ----------
-
-# # Test Flow 3: Feedback Request
-# print("=== Testing Flow 3: Feedback Request ===")
-# print("🧪 [TEST] Starting feedback request flow test...")
-# test_agent_flow3 = test_session_manager.get_agent_for_user("test_user_flow3")
-# test_input_3 = "How's the information collection going?"
-# response_3 = test_agent_flow3.process_user_input(test_input_3)
-# print(f"🧪 [TEST] Feedback request flow test completed")
-# print(f"User: {test_input_3}")
-# print(f"Agent: {response_3}")
-# print()
-
-# # COMMAND ----------
-
-# # Test Flow 4: Plan Generation
-# print("=== Testing Flow 4: Plan Generation ===")
-# print("🧪 [TEST] Starting plan generation flow test...")
-# test_agent_flow4 = test_session_manager.get_agent_for_user("test_user_flow4")
-# test_input_4 = "/plan"
-# response_4 = test_agent_flow4.process_user_input(test_input_4)
-# print(f"🧪 [TEST] Plan generation flow test completed")
-# print(f"User: {test_input_4}")
-# print(f"Agent: {response_4}")
-# print()
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 14. Test Session Isolation
-
-# COMMAND ----------
-
-# # Test session isolation to ensure no data bleeding between users
-# print("=== Testing Session Isolation ===")
-# print("🧪 [SESSION_TEST] Testing that users have isolated sessions...")
-
-# # Create two different user sessions
-# user1_agent = test_session_manager.get_agent_for_user("user_123")
-# user2_agent = test_session_manager.get_agent_for_user("user_456")
-
-# print("\n1. User 1 provides information:")
-# user1_input = "I'm working with a customer who wants to migrate from Oracle to Databricks. The customer has 10TB of data."
-# user1_response = user1_agent.process_user_input(user1_input)
-# print(f"   User 1: {user1_input}")
-# print(f"   Agent: {user1_response[:100]}...")
-
-# print("\n2. User 2 provides different information:")
-# user2_input = "I'm working with a customer who wants to migrate from Snowflake to Databricks. The customer has 5TB of data."
-# user2_response = user2_agent.process_user_input(user2_input)
-# print(f"   User 2: {user2_input}")
-# print(f"   Agent: {user2_response[:100]}...")
-
-# print("\n3. Check User 1's session context:")
-# user1_context = user1_agent.storage.get_conversation_context()
-# print(f"   User 1 context: {len(user1_context)} items")
-# for i, item in enumerate(user1_context):
-#     print(f"     {i+1}. {item['input'][:50]}...")
-
-# print("\n4. Check User 2's session context:")
-# user2_context = user2_agent.storage.get_conversation_context()
-# print(f"   User 2 context: {len(user2_context)} items")
-# for i, item in enumerate(user2_context):
-#     print(f"     {i+1}. {item['input'][:50]}...")
-
-# print("\n5. Verify isolation:")
-# user1_has_oracle = any("Oracle" in item['input'] for item in user1_context)
-# user1_has_snowflake = any("Snowflake" in item['input'] for item in user1_context)
-# user2_has_oracle = any("Oracle" in item['input'] for item in user2_context)
-# user2_has_snowflake = any("Snowflake" in item['input'] for item in user2_context)
-
-# print(f"   User 1 has Oracle data: {user1_has_oracle}")
-# print(f"   User 1 has Snowflake data: {user1_has_snowflake}")
-# print(f"   User 2 has Oracle data: {user2_has_oracle}")
-# print(f"   User 2 has Snowflake data: {user2_has_snowflake}")
-
-# if user1_has_oracle and not user1_has_snowflake and user2_has_snowflake and not user2_has_oracle:
-#     print("   ✅ SESSION ISOLATION WORKING: Users have separate, isolated sessions!")
-# else:
-#     print("   ❌ SESSION ISOLATION FAILED: Data is bleeding between users!")
-
-# print(f"\n6. Active sessions: {test_session_manager.get_active_sessions()}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 15. Test Intent Classification Fix
-
-# COMMAND ----------
-
-# # Test intent classification to ensure it's not biased by conversation history
-# print("=== Testing Intent Classification Fix ===")
-# print("🧪 [INTENT_TEST] Testing that intent classification works correctly after plan generation...")
-
-# # Create a test agent and simulate the problematic scenario
-# test_agent_intent = test_session_manager.get_agent_for_user("test_user_intent")
-
-# print("\n1. First interaction - user provides context:")
-# response1 = test_agent_intent.process_user_input("I am working with a customer to migrate their Oracle Datawarehouse to Databricks. Help me plan the migration.")
-# print(f"   Response: {response1[:100]}...")
-
-# print("\n2. Second interaction - user asks for questions (should NOT go to plan generator):")
-# response2 = test_agent_intent.process_user_input("ask me questions then")
-# print(f"   Response: {response2[:100]}...")
-
-# print("\n3. Third interaction - user provides more info (should go to info collection):")
-# response3 = test_agent_intent.process_user_input("The customer has 5 team members with different roles")
-# print(f"   Response: {response3[:100]}...")
-
-# print("\n4. Fourth interaction - user asks for status (should go to feedback):")
-# response4 = test_agent_intent.process_user_input("How's the information collection going?")
-# print(f"   Response: {response4[:100]}...")
-
-# print("\n✅ Intent classification test completed!")
-# print("   - Each interaction should be classified based on the current input only")
-# print("   - Conversation history should not bias the intent classification")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 16. Test Information Accumulation Fix
-
-# COMMAND ----------
-
-# Test information accumulation to ensure user responses are being stored
-print("=== Testing Information Accumulation Fix ===")
-print("🧪 [INFO_ACCUMULATION_TEST] Testing that user information is properly accumulated...")
-
-# Create a test agent and simulate the information collection flow
-test_agent_info = test_session_manager.get_agent_for_user("test_user_info")
-
-print("\n1. First interaction - user provides initial context:")
-response1 = test_agent_info.process_user_input("I am working with a customer for a Oracle Datawarehouse to Databricks migration. It's a large instance with multiple database with around 50TB data.")
-print(f"   Response: {response1[:100]}...")
-
-print("\n2. Second interaction - user answers questions:")
-response2 = test_agent_info.process_user_input("There are around 10 Databases with around 5 schemas in each database, roughly around 1000 tables, views, stored procedures etc... we need to export data from salesforce. using PL/SQL procedures for regular ETL and data processing. the customer is regulated GxP validation will be required for the data products.")
-print(f"   Response: {response2[:100]}...")
-
-print("\n3. Third interaction - user provides more details:")
-response3 = test_agent_info.process_user_input("The customer has 5 team members with different roles - 2 data engineers, 1 data architect, 1 business analyst, and 1 project manager.")
-print(f"   Response: {response3[:100]}...")
-
-print("\n4. Check status to see accumulated information:")
-response4 = test_agent_info.process_user_input("/status")
-print(f"   Response: {response4[:200]}...")
-
-print("\n✅ Information accumulation test completed!")
-print("   - User responses should be properly extracted and stored")
-print("   - Status should show accumulated information, not empty summary")
-
-# COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## 14. MLflow Model Registration
@@ -1211,19 +895,69 @@ class MigrationPlanningResponsesAgent(ResponsesAgent):
         # Ensure DSPy LM is configured
         self._ensure_dspy_lm_configured()
         
-        # Extract user input and user ID from the request
-        user_input = self._extract_user_input(request)
-        user_id = self._extract_user_id(request)
+        # Debug the request structure
+        print(f"🔍 [DEBUG] Request type: {type(request)}")
+        print(f"🔍 [DEBUG] Request attributes: {dir(request)}")
+        if hasattr(request, 'context'):
+            print(f"🔍 [DEBUG] Request context: {request.context}")
+        if hasattr(request, 'input'):
+            print(f"🔍 [DEBUG] Request input: {request.input}")
         
-        # Get or create agent for this user
-        agent = self.session_manager.get_agent_for_user(user_id)
+        # Extract user input and session identifiers from the request
+        user_input = self._extract_user_input(request)
+        user_id, conversation_id = self._extract_session_ids(request)
+        
+        print(f"🔐 [SESSION] Using user_id: {user_id}")
+        print(f"🔐 [SESSION] Using conversation_id: {conversation_id}")
+        print(f"🔐 [SESSION] Active sessions: {self.session_manager.get_active_sessions()}")
+        print(f"🔐 [SESSION] Session manager object ID: {id(self.session_manager)}")
+        
+        # Store debug info for response
+        self.debug_user_id = user_id
+        self.debug_active_sessions = self.session_manager.get_active_sessions()
+        
+        # Update current trace with proper MLflow session tracking
+        try:
+            import mlflow
+            mlflow.update_current_trace(
+                metadata={
+                    "mlflow.trace.user": user_id,
+                    "mlflow.trace.session": conversation_id,
+                }
+            )
+            print(f"🔐 [TRACE] Updated trace with user: {user_id}, session: {user_id}")
+        except Exception as e:
+            print(f"⚠️ [TRACE] Could not update trace with session info: {e}")
+        
+        # Get or create agent for this session
+        agent = self.session_manager.get_agent_for_user(user_id, conversation_id)
+        
+        # Debug session state
+        print(f"🔐 [SESSION] Agent storage summary length: {len(agent.storage.get_summary())}")
+        print(f"🔐 [SESSION] Agent storage context length: {len(agent.storage.get_conversation_context())}")
         
         # Call the DSPy agent for this user's session
         response = agent.process_user_input(user_input)
         
+        # Add debug information to the response for troubleshooting
+        debug_info = f"""
+        
+[DEBUG INFO]
+User ID: {user_id}
+Active Sessions: {self.session_manager.get_active_sessions()}
+Storage Summary Length: {len(agent.storage.get_summary())}
+Storage Context Length: {len(agent.storage.get_conversation_context())}
+Storage Summary: {agent.storage.get_summary()[:200]}...
+Request Context: {request.context if hasattr(request, 'context') else 'None'}
+Request Headers: {request.headers if hasattr(request, 'headers') else 'None'}
+"""
+        
+        # Combine the response with debug info
+        full_response = str(response) + debug_info
+        
         # Convert to ResponsesAgent format
         output_item = self.create_text_output_item(
-            text=str(response), 
+            text=full_response, 
             id=str(uuid4())
         )
         
@@ -1263,36 +997,47 @@ class MigrationPlanningResponsesAgent(ResponsesAgent):
         
         return "Hello, I need help with migration planning."
     
-    def _extract_user_id(self, request: ResponsesAgentRequest) -> str:
-        """Extract user ID from ResponsesAgentRequest."""
-        # Try to get user ID from request context or headers
-        if hasattr(request, 'context') and request.context:
-            if 'user_id' in request.context:
-                return str(request.context['user_id'])
-            if 'session_id' in request.context:
-                return str(request.context['session_id'])
+    def _extract_session_ids(self, request: ResponsesAgentRequest) -> Tuple[str, str]:
+        """Extract user_id and conversation_id from ResponsesAgentRequest using MLflow ChatContext."""
+        print(f"🔍 [DEBUG] Extracting session IDs from request...")
         
-        # Try to get from request headers if available
-        if hasattr(request, 'headers') and request.headers:
-            if 'user-id' in request.headers:
-                return str(request.headers['user-id'])
-            if 'session-id' in request.headers:
-                return str(request.headers['session-id'])
+        # Check context
+        if not hasattr(request, 'context') or not request.context:
+            raise ValueError("❌ [ERROR] Request has no context - ensure MLflow passes ChatContext")
         
-        # Try to get from the first message if it contains user info
-        if request.input and len(request.input) > 0:
-            first_message = request.input[0]
-            if hasattr(first_message, 'metadata') and first_message.metadata:
-                if 'user_id' in first_message.metadata:
-                    return str(first_message.metadata['user_id'])
+        context = request.context
+        print(f"🔍 [DEBUG] Request context: {context}")
+        print(f"🔍 [DEBUG] Context type: {type(context)}")
         
-        # Fallback: generate a unique user ID based on request
-        # This is not ideal for production but works for MVP
-        import hashlib
-        request_str = str(request.input) if request.input else "default"
-        user_id = hashlib.md5(request_str.encode()).hexdigest()[:8]
-        print(f"🔐 [USER_ID] Generated fallback user ID: {user_id}")
-        return user_id
+        user_id = None
+        conversation_id = None
+
+        if isinstance(context, dict):
+            user_id = context.get("user_id") or context.get("userId")
+            conversation_id = context.get("conversation_id") or context.get("conversationId")
+        else:
+            if hasattr(context, 'user_id') and context.user_id:
+                user_id = str(context.user_id)
+            if hasattr(context, 'conversation_id') and context.conversation_id:
+                conversation_id = str(context.conversation_id)
+        
+        if user_id is not None:
+            user_id = str(user_id)
+        if conversation_id is not None:
+            conversation_id = str(conversation_id)
+        
+        if user_id is None or conversation_id is None:
+            # Try to extract from request.metadata if available
+            if hasattr(request, "metadata") and request.metadata:
+                metadata = request.metadata
+                user_id = metadata.get("user_id") or metadata.get("userId") or user_id
+                conversation_id = metadata.get("conversation_id") or metadata.get("conversationId") or conversation_id
+
+        if user_id is None or conversation_id is None:
+            raise ValueError(f"❌ [ERROR] Context missing session identifiers. user_id={user_id}, conversation_id={conversation_id}, context={context}")
+        
+        print(f"🔐 [SESSION] Extracted user_id: {user_id}, conversation_id: {conversation_id}")
+        return user_id, conversation_id
 
 # Create the ResponsesAgent wrapper with session management
 responses_agent = MigrationPlanningResponsesAgent(vector_search_endpoint, vector_index_name)
@@ -1300,14 +1045,18 @@ print("ResponsesAgent wrapper created successfully with session management!")
 
 # COMMAND ----------
 
-# Input example for the model - using the same format as v2 notebook
+# Input example for the model - using proper MLflow approach
 input_example = {
     "input": [
         {
             "role": "user", 
             "content": "I need to migrate our Oracle data warehouse to Databricks"
         }
-    ]
+    ],
+    "context": {
+        "user_id": "sample_user",
+        "conversation_id": "sample_conversation"
+    }
 }
 
 # Log the ResponsesAgent using MLflow (Databricks Agent Framework compatible)
